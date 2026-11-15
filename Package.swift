@@ -179,7 +179,6 @@ let package = Package(
             dependencies: [
                 .target(name: "FoundationEssentials"),
                 .target(name: "_FoundationCShims"),
-                .product(name: "_FoundationICU", package: "swift-foundation-icu")
             ],
             exclude: [
                 "String/CMakeLists.txt",
@@ -195,7 +194,10 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("AccessLevelOnImport"),
                 .enableExperimentalFeature("Lifetimes"),
-            ] + availabilityMacros + featureSettings
+            ] + availabilityMacros + featureSettings,
+            linkerSettings: [
+                .linkedLibrary("_FoundationICU"),
+            ]
         ),
         
         .testTarget(
