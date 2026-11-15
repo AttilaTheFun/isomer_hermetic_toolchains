@@ -246,6 +246,21 @@ let package = Package(
 // AttilaTheFun/isomer), where every `import Foundation` is this one. Kept here,
 // below swift-foundation's own declarations, so a new release's Package.swift
 // rebases under it.
+//
+// The targets are isomer's Package.swift's, built the same way, with two
+// differences that come from living here: Foundation is in swift-foundation's
+// package without asking (isomer passes `-package-name swift-foundation`), and
+// each target names its language mode, which isomer's package sets for all
+// of them (`swiftLanguageModes: [.v5]`) and this one, at tools version 6.2,
+// would otherwise take to be Swift 6.
+
+// FoundationInternationalization in Foundation, as isomer's
+// `--@isomer//foundation:internationalization` adds it: a module that
+// re-exports it, which Foundation re-exports when it can import it
+// (Foundation.swift's `canImport(IsomerFoundationInternationalization)`). A
+// build's choice, so an environment variable's; off by default, as isomer's
+// flag is, and in the SDK sdk/build.sh makes (its ICU comes later).
+let isomerInternationalization = Context.environment["ISOMER_FOUNDATION_INTERNATIONALIZATION"] == "1"
 
 package.products += [
     .library(name: "Foundation", targets: ["Foundation"]),
@@ -263,11 +278,13 @@ package.targets += [
             // The toolchain's corelibs Foundation declares CGFloat and the
             // geometry types there, until those SDKs carry this Foundation.
             .define("ISOMER_CORELIBS_FOUNDATION", .when(platforms: [.linux, .windows])),
+            .swiftLanguageMode(.v5),
         ]
     ),
     .target(
         name: "Combine",
-        path: "Isomer/Sources/Combine"
+        path: "Isomer/Sources/Combine",
+        swiftSettings: [.swiftLanguageMode(.v5)]
     ),
     .target(
         name: "IsomerFoundation",
@@ -277,12 +294,19 @@ package.targets += [
     ),
     .target(
         name: "IsomerDispatchTime",
-        path: "Isomer/Sources/IsomerDispatchTime"
+        path: "Isomer/Sources/IsomerDispatchTime",
+        swiftSettings: [.swiftLanguageMode(.v5)]
     ),
     .target(
         name: "CWasiThreadIdentity",
         path: "Isomer/Sources/CWasiThreadIdentity",
         publicHeadersPath: "."
+    ),
+    .target(
+        name: "IsomerFoundationInternationalization",
+        dependencies: ["FoundationInternationalization"],
+        path: "Isomer/Sources/IsomerFoundationInternationalization",
+        swiftSettings: [.swiftLanguageMode(.v5)]
     ),
     .target(
         // In this package, so its string API searches with FoundationEssentials'
@@ -295,12 +319,28 @@ package.targets += [
             "FoundationEssentials",
             .target(name: "IsomerDispatchTime", condition: .when(platforms: [.android, .wasi])),
             .target(name: "CWasiThreadIdentity", condition: .when(platforms: [.wasi])),
-        ],
-        path: "Isomer/Sources/Foundation"
+        ] + (isomerInternationalization ? ["IsomerFoundationInternationalization"] : []),
+        path: "Isomer/Sources/Foundation",
+        swiftSettings: [.swiftLanguageMode(.v5)]
     ),
     .target(
         name: "FoundationNetworking",
         dependencies: ["Foundation"],
-        path: "Isomer/Sources/FoundationNetworking"
+        path: "Isomer/Sources/FoundationNetworking",
+        swiftSettings: [.swiftLanguageMode(.v5)]
     ),
 ]
+
+// Link names, for a Swift SDK's build (sdk/build.sh sets ISOMER_SWIFT_SDK).
+// A client's object records the libraries its imports name, by the link
+// names their modules carry when it compiles, and SwiftPM gives a module
+// none: so in an SDK, whose archives no build system lists, every Swift
+// module carries its own name (`-module-link-name`), and `import Foundation`
+// links libFoundation.a. Unsafe flags, so only for that build: a package
+// that depends on this one by version can't take them.
+if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
+    let cTargets: Set<String> = ["_FoundationCShims", "CWasiThreadIdentity"]
+    for target in package.targets where target.type == .regular && !cTargets.contains(target.name) {
+        target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-module-link-name", target.name])]
+    }
+}
