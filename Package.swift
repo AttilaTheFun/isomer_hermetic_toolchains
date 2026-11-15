@@ -236,3 +236,71 @@ let package = Package(
         )
     ]
 )
+
+// MARK: - Isomer
+//
+// What Isomer adds (Isomer/Sources): its Foundation over FoundationEssentials,
+// the modules that come with it (FoundationNetworking, IsomerFoundation,
+// CoreGraphics, Combine) and their helpers. Built into Isomer's Swift SDKs for
+// the platforms without Apple's Foundation (docs/hermetic_toolchains.md in
+// AttilaTheFun/isomer), where every `import Foundation` is this one. Kept here,
+// below swift-foundation's own declarations, so a new release's Package.swift
+// rebases under it.
+
+package.products += [
+    .library(name: "Foundation", targets: ["Foundation"]),
+    .library(name: "FoundationNetworking", targets: ["FoundationNetworking"]),
+    .library(name: "IsomerFoundation", targets: ["IsomerFoundation"]),
+    .library(name: "CoreGraphics", targets: ["CoreGraphics"]),
+    .library(name: "Combine", targets: ["Combine"]),
+]
+
+package.targets += [
+    .target(
+        name: "CoreGraphics",
+        path: "Isomer/Sources/CoreGraphics",
+        swiftSettings: [
+            // The toolchain's corelibs Foundation declares CGFloat and the
+            // geometry types there, until those SDKs carry this Foundation.
+            .define("ISOMER_CORELIBS_FOUNDATION", .when(platforms: [.linux, .windows])),
+        ]
+    ),
+    .target(
+        name: "Combine",
+        path: "Isomer/Sources/Combine"
+    ),
+    .target(
+        name: "IsomerFoundation",
+        dependencies: ["FoundationEssentials"],
+        path: "Isomer/Sources/IsomerFoundation",
+        swiftSettings: [.swiftLanguageMode(.v6), .enableUpcomingFeature("ExistentialAny")]
+    ),
+    .target(
+        name: "IsomerDispatchTime",
+        path: "Isomer/Sources/IsomerDispatchTime"
+    ),
+    .target(
+        name: "CWasiThreadIdentity",
+        path: "Isomer/Sources/CWasiThreadIdentity",
+        publicHeadersPath: "."
+    ),
+    .target(
+        // In this package, so its string API searches with FoundationEssentials'
+        // `package` helpers.
+        name: "Foundation",
+        dependencies: [
+            "Combine",
+            "CoreGraphics",
+            "IsomerFoundation",
+            "FoundationEssentials",
+            .target(name: "IsomerDispatchTime", condition: .when(platforms: [.android, .wasi])),
+            .target(name: "CWasiThreadIdentity", condition: .when(platforms: [.wasi])),
+        ],
+        path: "Isomer/Sources/Foundation"
+    ),
+    .target(
+        name: "FoundationNetworking",
+        dependencies: ["Foundation"],
+        path: "Isomer/Sources/FoundationNetworking"
+    ),
+]
