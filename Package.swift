@@ -344,13 +344,20 @@ package.targets += [
 // SDK's do (CMakeLists.txt's `-public-autolink-library` for a static build):
 // FoundationEssentials calls them, and SwiftPM's `linkedLibrary` only reaches
 // this package's own links, never a client's.
+//
+// And no module hash in the objects (`-disable-incremental-llvm-codegen`):
+// a hash of each object's LLVM module, which differs with the build's paths
+// while the rest of the object doesn't, read only by the compiler's
+// incremental code generation. Without it an SDK is the same wherever it is
+// built. (On ELF it is a section objcopy could strip; on wasm a data
+// segment, which it can't.)
 if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
     let cTargets: Set<String> = ["_FoundationCShims", "CWasiThreadIdentity"]
     let wasiEmulated = ["wasi-emulated-getpid", "wasi-emulated-signal", "wasi-emulated-mman"]
         .flatMap { ["-Xfrontend", "-public-autolink-library", "-Xfrontend", $0] }
     for target in package.targets where target.type == .regular && !cTargets.contains(target.name) {
         target.swiftSettings = (target.swiftSettings ?? []) + [
-            .unsafeFlags(["-module-link-name", target.name]),
+            .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
             .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
         ]
     }

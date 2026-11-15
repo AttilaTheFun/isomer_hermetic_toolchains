@@ -291,14 +291,28 @@ for dep in "${DEPS[@]}"; do
 done
 # swift-collections' modules carry their link names too, as this package's
 # do (Package.swift's ISOMER_SWIFT_SDK): FoundationEssentials imports them.
+# And no module hash in their objects, as this package's (the same block).
 cat >> "$WORK/deps/swift-collections/Package.swift" <<'EOF'
 
 // Isomer's Swift SDK build (isomer_hermetic_toolchains' sdk/build.sh): each
-// module carries its link name, as swift-foundation's do there.
+// module carries its link name, and its objects no module hash, as
+// swift-foundation's do there.
 for target in package.targets where target.type == .regular {
-    target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-module-link-name", target.name])]
+    target.swiftSettings = (target.swiftSettings ?? []) + [
+        .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
+    ]
 }
 EOF
+
+# The package built from a copy under a fixed name: SwiftPM names a root
+# package after its directory and compiles every module with that
+# `-package-name`, which its .swiftmodule records, so a checkout named
+# otherwise (isomer_hermetic_toolchains, a CI runner's) would make other
+# modules. swift-foundation is the name isomer gives these modules too.
+PACKAGE="$WORK/package/swift-foundation"
+rm -rf "$WORK/package"; mkdir -p "$PACKAGE"
+tar -C "$REPO" --exclude=./.git --exclude=./.build --exclude=./.swiftpm -cf - . | tar -C "$PACKAGE" -xf -
+echo "the package: $REPO, copied to $PACKAGE"
 
 # --- prune ----------------------------------------------------------------------
 
@@ -383,7 +397,7 @@ for arch in "${ARCHES[@]}"; do
     for target in "${TARGETS[@]}"; do
         echo "-- $target"
         ISOMER_SWIFT_SDK=1 SWIFTCI_USE_LOCAL_DEPS="$WORK/deps" "$BIN/swift" build --build-system native \
-            --package-path "$REPO" --scratch-path "$SCRATCH" \
+            --package-path "$PACKAGE" --scratch-path "$SCRATCH" \
             --swift-sdks-path "$BUILD_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib \
             -c release -debug-info-format none --target "$target"
     done
@@ -407,12 +421,8 @@ for arch in "${ARCHES[@]}"; do
         rm -f "$OS_DIR/lib$module.a"
         # (Object names have spaces: FoundationEssentials' sources' do.)
         mapfile -t objects < <(printf '%s\n' "${objects[@]}" | LC_ALL=C sort)
-        # Each object's .swift_modhash is a hash of its LLVM module, which
-        # differs with the build's paths (the rest of the object doesn't),
-        # and only the compiler's incremental code generation reads it:
-        # without it the archives are the same wherever they are built. (C
-        # objects have none; objcopy leaves them as they are.)
-        for object in "${objects[@]}"; do "$BIN/llvm-objcopy" --remove-section=.swift_modhash "$object"; done
+        # (The objects carry no module hash, which differs with the build's
+        # paths: Package.swift's ISOMER_SWIFT_SDK block.)
         "$BIN/llvm-ar" crsD "$OS_DIR/lib$module.a" "${objects[@]}"
         if [ -f "$PRODUCTS_DIR/Modules/$module.swiftmodule" ]; then
             mkdir -p "$OS_DIR/$module.swiftmodule"
@@ -436,7 +446,7 @@ for arch in "${ARCHES[@]}"; do
     # other C module, is imported only by a threaded wasm build, which this
     # SDK isn't: its archive is folded, its headers not needed.)
     mkdir -p "$STATIC/_FoundationCShims"
-    cp "$REPO"/Sources/_FoundationCShims/include/* "$STATIC/_FoundationCShims/"
+    cp "$PACKAGE"/Sources/_FoundationCShims/include/* "$STATIC/_FoundationCShims/"
     echo "  in: _FoundationCShims/ (clang module: $(ls "$STATIC/_FoundationCShims" | wc -l) files)"
 
     fold_into "$OS_DIR" FoundationEssentials "${FOLD_INTO_ESSENTIALS[@]}"
