@@ -1,0 +1,44 @@
+name: Isomer SDK
+# Isomer's Android arm64 SDK (sdk/build.sh), on each isomer-* branch push and
+# isomer-* tag; kept as an artifact, and attached to an isomer-* tag's release.
+# Actions pinned by commit, the image by digest; only the tag's release job
+# can write (NCH, committed as Logan under the workflows rule).
+on:
+  push:
+    branches: ['isomer-*']
+    tags: ['isomer-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android-aarch64:
+    runs-on: ubuntu-24.04-arm
+    # The image the builds were checked in (Swift's libraries, unzip, git):
+    # ghcr.io/attilathefun/visor-agent:0.41.2.
+    container: ghcr.io/attilathefun/visor-agent@sha256:849dcf6aeb16119e3b769b4f0c410b93ac58ed1e3b3ef2801f7534def3fbaaf0
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The pack step reads the commit's time (git log -1 --format=%ct).
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: sdk/build.sh android-aarch64 --out="$RUNNER_TEMP/sdk"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: isomer-android-sdk
+          path: ${{ runner.temp }}/sdk/
+          compression-level: 0
+  release:
+    # An isomer-* tag's release gets the SDK; the only job that writes.
+    if: startsWith(github.ref, 'refs/tags/isomer-')
+    needs: android-aarch64
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: isomer-android-sdk
+          path: sdk
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" sdk/* --clobber -R "$GITHUB_REPOSITORY"
