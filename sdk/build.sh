@@ -286,6 +286,11 @@ for dir in "$PRODUCTS_DIR"/*.build; do
     rm -f "$STATIC/android/lib$module.a"
     # (Object names have spaces: FoundationEssentials' sources' do.)
     mapfile -t objects < <(printf '%s\n' "${objects[@]}" | LC_ALL=C sort)
+    # Each object's .swift_modhash is a hash of its LLVM module, which
+    # differs with the build's paths (the rest of the object doesn't), and
+    # only the compiler's incremental code generation reads it: without it
+    # the archives are the same wherever they are built.
+    for object in "${objects[@]}"; do "$BIN/llvm-objcopy" --remove-section=.swift_modhash "$object"; done
     "$BIN/llvm-ar" crsD "$STATIC/android/lib$module.a" "${objects[@]}"
     if [ -f "$PRODUCTS_DIR/Modules/$module.swiftmodule" ]; then
         mkdir -p "$STATIC/android/$module.swiftmodule"
