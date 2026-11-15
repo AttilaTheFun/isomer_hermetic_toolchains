@@ -338,9 +338,20 @@ package.targets += [
 // module carries its own name (`-module-link-name`), and `import Foundation`
 // links libFoundation.a. Unsafe flags, so only for that build: a package
 // that depends on this one by version can't take them.
+//
+// On WASI, each module also asks its clients for wasi-libc's emulated
+// getpid, signals and mmap, as swift-foundation's CMake build makes the stock
+// SDK's do (CMakeLists.txt's `-public-autolink-library` for a static build):
+// FoundationEssentials calls them, and SwiftPM's `linkedLibrary` only reaches
+// this package's own links, never a client's.
 if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
     let cTargets: Set<String> = ["_FoundationCShims", "CWasiThreadIdentity"]
+    let wasiEmulated = ["wasi-emulated-getpid", "wasi-emulated-signal", "wasi-emulated-mman"]
+        .flatMap { ["-Xfrontend", "-public-autolink-library", "-Xfrontend", $0] }
     for target in package.targets where target.type == .regular && !cTargets.contains(target.name) {
-        target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-module-link-name", target.name])]
+        target.swiftSettings = (target.swiftSettings ?? []) + [
+            .unsafeFlags(["-module-link-name", target.name]),
+            .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
+        ]
     }
 }
