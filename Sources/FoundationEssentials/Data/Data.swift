@@ -278,9 +278,8 @@ public struct Data : RandomAccessCollection, MutableCollection, RangeReplaceable
     ///       - span: An `OutputRawSpan` covering uninitialized memory with
     ///         space for the specified number of bytes.
     @available(macOS 10.14.4, iOS 12.2, watchOS 5.2, tvOS 12.2, *)
-    @_alwaysEmitIntoClient
-    @_spi(_) // TODO: Remove pending API surface amendment
-    public init<E: Error>(
+    @usableFromInline
+    internal init<E: Error>(
         rawCapacity capacity: Int,
         initializingWith initializer: (_ span: inout OutputRawSpan) throws(E) -> Void
     ) throws(E) {
@@ -726,8 +725,8 @@ public struct Data : RandomAccessCollection, MutableCollection, RangeReplaceable
 
     /// Appends the bytes in the specified sequence to the end of the data.
     @inline(__always)
-    @_alwaysEmitIntoClient
-    public mutating func append(contentsOf elements: some Sequence<UInt8> & ContiguousBytes) {
+    @usableFromInline
+    internal mutating func append(contentsOf elements: some Sequence<UInt8> & ContiguousBytes) {
         // Since the sequence is already contiguous, access the underlying raw memory directly.
         elements.withUnsafeBytes {
             guard !$0.isEmpty else { return }
@@ -870,8 +869,8 @@ public struct Data : RandomAccessCollection, MutableCollection, RangeReplaceable
     ///   - subrange: The range in the data to replace.
     ///   - newElements: The replacement bytes.
     @inline(__always)
-    @_alwaysEmitIntoClient
-    public mutating func replaceSubrange(_ subrange: Range<Index>, with newElements: some Collection<UInt8> & ContiguousBytes) {
+    @usableFromInline
+    internal mutating func replaceSubrange(_ subrange: Range<Index>, with newElements: some Collection<UInt8> & ContiguousBytes) {
         newElements.withUnsafeBytes { buffer in
             _representation.replaceSubrange(subrange, with: buffer.baseAddress, count: buffer.count)
         }

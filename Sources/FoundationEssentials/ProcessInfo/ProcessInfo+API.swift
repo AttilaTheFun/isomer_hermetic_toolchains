@@ -115,7 +115,8 @@ extension ProcessInfo {
 /// A structure that contains version information about the currently executing operating system, including major, minor, and patch version numbers.
 ///
 /// Use the ``ProcessInfo`` property ``ProcessInfo/operatingSystemVersion`` to fetch an instance of this type. You can also pass this type to ``ProcessInfo/isOperatingSystemAtLeast(_:)`` to determine whether the current operating system version is the same or later than the given value.
-public struct OperatingSystemVersion: Hashable, Codable, Sendable {
+// Isomer: Apple's is a C struct, neither Hashable nor Codable.
+public struct OperatingSystemVersion: Sendable {
     /// The major release number, such as 10 in version 10.9.3.
     public let majorVersion: Int
     /// The minor release number, such as 9 in version 10.9.3.
