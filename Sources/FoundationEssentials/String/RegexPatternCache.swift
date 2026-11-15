@@ -12,7 +12,7 @@
 
 internal import Synchronization
 
-struct RegexPatternCache: Sendable, ~Copyable {
+package struct RegexPatternCache: Sendable, ~Copyable {
     private struct Key : Sendable, Hashable {
         var pattern: String
         var caseInsensitive: Bool
@@ -20,13 +20,13 @@ struct RegexPatternCache: Sendable, ~Copyable {
 
     private let _lock: Mutex<[Key: Regex<AnyRegexOutput>]>
 
-    static let cache = RegexPatternCache()
+    package static let cache = RegexPatternCache()
 
     fileprivate init() {
         _lock = Mutex(.init())
     }
 
-    func regex(for pattern: String, caseInsensitive: Bool) throws -> Regex<AnyRegexOutput>? {
+    package func regex(for pattern: String, caseInsensitive: Bool) throws -> Regex<AnyRegexOutput>? {
 
         let key = Key(pattern: pattern, caseInsensitive: caseInsensitive)
 

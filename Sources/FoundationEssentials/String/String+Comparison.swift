@@ -599,7 +599,7 @@ extension Substring {
         return unicodeScalars._rangeOfCharacter(anchored: options.contains(.anchored), backwards: options.contains(.backwards), matchingPredicate: set.contains)
     }
 
-    func _range(of strToFind: Substring, options: String.CompareOptions) throws -> Range<Index>? {
+    package func _range(of strToFind: Substring, options: String.CompareOptions) throws -> Range<Index>? {
         #if !NO_REGEX
         if options.contains(.regularExpression) {
             guard let regex = try RegexPatternCache.cache.regex(for: String(strToFind), caseInsensitive: options.contains(.caseInsensitive)) else {
@@ -684,7 +684,7 @@ extension Substring.UnicodeScalarView {
         return ComparisonResult(stringIndex: idx1, idx2: idx2, endIndex1: endIndex, endIndex2: other.endIndex)
     }
 
-    func _rangeOfCharacter(anchored: Bool, backwards: Bool, matchingPredicate predicate: (Unicode.Scalar) -> Bool) -> Range<Index>? {
+    package func _rangeOfCharacter(anchored: Bool, backwards: Bool, matchingPredicate predicate: (Unicode.Scalar) -> Bool) -> Range<Index>? {
         guard !isEmpty else { return nil }
 
         let fromLoc: String.Index

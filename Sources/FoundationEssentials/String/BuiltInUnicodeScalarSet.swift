@@ -25,7 +25,7 @@ internal import _FoundationCollections
 // Represents sets of unicode scalars of those whose bitmap data we own.
 // whitespace, whitespaceAndNewline, and newline are not included since they're not stored with bitmaps
 // This only contains a subset of predefined CFCharacterSet that are in use for now.
-internal struct BuiltInUnicodeScalarSet {
+package struct BuiltInUnicodeScalarSet {
     enum SetType {
         case control
         case whitespace
@@ -216,7 +216,7 @@ internal struct BuiltInUnicodeScalarSet {
     }
     
     // CFUniCharIsMemberOf
-    internal func contains(_ scalar: Unicode.Scalar) -> Bool {
+    package func contains(_ scalar: Unicode.Scalar) -> Bool {
         switch charset {
         case .whitespace:
             return isWhitespace(scalar)
@@ -445,12 +445,12 @@ internal struct BuiltInUnicodeScalarSet {
         return ((scalar.value >= 0x000A && scalar.value <= 0x000D) || (scalar.value == 0x0085) || (scalar.value == 0x2028) || (scalar.value == 0x2029))
     }
 
-    static let uppercaseLetters = Self.init(type: .uppercaseLetter)
-    static let lowercaseLetters = Self.init(type: .lowercaseLetter)
+    package static let uppercaseLetters = Self.init(type: .uppercaseLetter)
+    package static let lowercaseLetters = Self.init(type: .lowercaseLetter)
     static let caseIgnorables = Self.init(type: .caseIgnorable)
     static let hfsPlusDecomposables = Self.init(type: .hfsPlusDecomposable)
     static let graphemeExtends = Self.init(type: .graphemeExtend)
-    static let canonicalDecomposables = Self.init(type: .canonicalDecomposable)
+    package static let canonicalDecomposables = Self.init(type: .canonicalDecomposable)
 }
 
 #if !FOUNDATION_FRAMEWORK
