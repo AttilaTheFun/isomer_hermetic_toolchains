@@ -441,20 +441,36 @@ for arch in "${ARCHES[@]}"; do
 
     step assemble "the family into $(static_rel_of "$arch")"
     # Every target the build compiled for the target: a directory of objects
-    # each.
+    # each, merged into one relocatable object (ld -r) before it is archived.
+    # A static archive's member is linked only when a symbol in it is wanted,
+    # and some of a module's objects define nothing a client names: a file
+    # of conformances alone (Foundation's NSNumberBridging.swift, Swift's
+    # numbers bridging to NSNumber for `as? Int`), which the runtime finds by
+    # its conformance records. One object a module, so a module linked at all
+    # is linked whole, conformances included, as Bazel links a library built
+    # from source (the linker's --gc-sections still drops what nothing
+    # reaches).
+    case "$PLATFORM" in
+        android) RELOCATABLE_LD=("$BIN/ld.lld" -r) ;;
+        wasi) RELOCATABLE_LD=("$BIN/wasm-ld" -r) ;;
+    esac
+    MERGED="$WORK/merged/$arch"
+    rm -rf "$MERGED"; mkdir -p "$MERGED"
     modules=()
     for dir in "$PRODUCTS_DIR"/*.build; do
         module="$(basename "$dir" .build)"
         objects=("$dir"/*.o)
         [ -e "${objects[0]}" ] || continue
-        # An archive per module, its members sorted and llvm-ar's
-        # deterministic headers, so the same objects make the same archive.
+        # An archive per module, of its objects merged in a sorted order, and
+        # llvm-ar's deterministic headers, so the same objects make the same
+        # archive.
         rm -f "$OS_DIR/lib$module.a"
         # (Object names have spaces: FoundationEssentials' sources' do.)
         mapfile -t objects < <(printf '%s\n' "${objects[@]}" | LC_ALL=C sort)
         # (The objects carry no module hash, which differs with the build's
         # paths: Package.swift's ISOMER_SWIFT_SDK block.)
-        "$BIN/llvm-ar" crsD "$OS_DIR/lib$module.a" "${objects[@]}"
+        "${RELOCATABLE_LD[@]}" -o "$MERGED/$module.o" "${objects[@]}"
+        "$BIN/llvm-ar" crsD "$OS_DIR/lib$module.a" "$MERGED/$module.o"
         if [ -f "$PRODUCTS_DIR/Modules/$module.swiftmodule" ]; then
             mkdir -p "$OS_DIR/$module.swiftmodule"
             cp "$PRODUCTS_DIR/Modules/$module.swiftmodule" "$OS_DIR/$module.swiftmodule/${MODULE_TRIPLE[$arch]}.swiftmodule"
@@ -561,14 +577,19 @@ let cancellable = subject.sink { print(String(format: "%05.2f", Double($0))) }
 subject.send(3)
 print(String(decoding: json, as: UTF8.self), CGRect(x: 0, y: 0, width: 2, height: 3).area)
 print(String(reflecting: URLSession.self), URLSession(configuration: .default))
+// Swift's numbers bridge to NSNumber (a conformance nothing names: the
+// archives' objects are merged a module each so that it is linked).
+let decoded = try JSONSerialization.jsonObject(with: Data(#"{"n":7}"#.utf8)) as! [String: Any]
+print("bridged", decoded["n"] as? Int ?? -1)
 _ = cancellable
 extension CGRect { var area: CGFloat { width * height } }
 EOF
 # What the client prints, where it can be run (wasm, under WasmKit): the
-# first two lines (the third is URLSession's description), and with -i18n
-# the two after it.
+# first two lines (the third is URLSession's description), the fourth, and
+# with -i18n the two after it.
 EXPECTED_OUTPUT='03.00
 {"n":1} 6.0'
+EXPECTED_BRIDGED='bridged 7'
 EXPECTED_I18N_OUTPUT=""
 # The -i18n variant's client also formats a date and a number in other
 # locales, through `import Foundation` alone: FoundationInternationalization
@@ -635,7 +656,9 @@ for arch in "${ARCHES[@]}"; do
         output="$("$BIN/wasmkit" run "$CLIENT_BIN" 2>&1)" || bad="$bad the program failed under WasmKit;"
         echo "the client under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
         [ "$(printf '%s\n' "$output" | head -2)" = "$EXPECTED_OUTPUT" ] || bad="$bad the program printed something else;"
-        [ $I18N = 0 ] || [ "$(printf '%s\n' "$output" | sed -n 4,5p)" = "$EXPECTED_I18N_OUTPUT" ] ||
+        [ "$(printf '%s\n' "$output" | sed -n 4p)" = "$EXPECTED_BRIDGED" ] ||
+            bad="$bad the program's numbers didn't bridge to NSNumber;"
+        [ $I18N = 0 ] || [ "$(printf '%s\n' "$output" | sed -n 5,6p)" = "$EXPECTED_I18N_OUTPUT" ] ||
             bad="$bad the program formatted its date or number otherwise;"
         # swift-testing beside this Foundation: `import Testing` with
         # `import Foundation` loads no overlay (above), and libTesting.a's
