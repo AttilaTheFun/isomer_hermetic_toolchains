@@ -545,9 +545,11 @@ _ = cancellable
 extension CGRect { var area: CGFloat { width * height } }
 EOF
 # What the client prints, where it can be run (wasm, under WasmKit): the
-# first lines; URLSession's description is the object's address.
+# first two lines (the third is URLSession's description), and with -i18n
+# the two after it.
 EXPECTED_OUTPUT='03.00
 {"n":1} 6.0'
+EXPECTED_I18N_OUTPUT=""
 # The -i18n variant's client also formats a date and a number in other
 # locales, through `import Foundation` alone: FoundationInternationalization
 # and ICU's data are there.
@@ -557,9 +559,8 @@ let epoch = Date(timeIntervalSince1970: 0)
 print(epoch.formatted(Date.FormatStyle(date: .long, time: .omitted, locale: Locale(identifier: "fr_FR"), timeZone: TimeZone(identifier: "UTC")!)))
 print(1234567.formatted(.number.locale(Locale(identifier: "de_DE"))))
 EOF
-    EXPECTED_OUTPUT="$EXPECTED_OUTPUT
-1 janvier 1970
-1.234.567"
+    EXPECTED_I18N_OUTPUT='1 janvier 1970
+1.234.567'
 fi
 
 for arch in "${ARCHES[@]}"; do
@@ -613,8 +614,9 @@ for arch in "${ARCHES[@]}"; do
         done
         output="$("$BIN/wasmkit" run "$CLIENT_BIN" 2>&1)" || bad="$bad the program failed under WasmKit;"
         echo "the client under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
-        [ "$(printf '%s\n' "$output" | head -"$(printf '%s\n' "$EXPECTED_OUTPUT" | wc -l)")" = "$EXPECTED_OUTPUT" ] ||
-            bad="$bad the program printed something else;"
+        [ "$(printf '%s\n' "$output" | head -2)" = "$EXPECTED_OUTPUT" ] || bad="$bad the program printed something else;"
+        [ $I18N = 0 ] || [ "$(printf '%s\n' "$output" | sed -n 4,5p)" = "$EXPECTED_I18N_OUTPUT" ] ||
+            bad="$bad the program formatted its date or number otherwise;"
         # swift-testing beside this Foundation: `import Testing` with
         # `import Foundation` loads no overlay (above), and libTesting.a's
         # FoundationEssentials symbols are this one's. Its runner is called
