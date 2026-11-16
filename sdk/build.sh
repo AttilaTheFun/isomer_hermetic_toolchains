@@ -422,6 +422,17 @@ for arch in "${ARCHES[@]}"; do
     # whole NDK installed (its compilers, x86_64 Linux's), where the native
     # one takes the SDK's sysroot alone, and leaves each target's objects in
     # a directory of its own, which is what the SDK's archives are made from.
+    # Each Swift module compiled whole into one object (-num-threads 0;
+    # release builds split it a file each): a static archive's member is
+    # linked only when a symbol in it is wanted, and some of a module's files
+    # define nothing a client names, a file of conformances alone
+    # (Foundation's NSNumberBridging.swift, Swift's numbers bridging to
+    # NSNumber for `as? Int`), which the runtime finds by its conformance
+    # records. One object a module, so a module linked at all is linked
+    # whole, as Bazel links a library built from source; --gc-sections still
+    # drops what nothing reaches. (Not objects merged by `ld -r` afterwards:
+    # wasm-ld's loses the retain flag of Swift's metadata, which the final
+    # link then collects.)
     SCRATCH="$WORK/swiftpm/$TRIPLE$([ $I18N = 0 ] || echo -i18n)"
     rm -rf "$SCRATCH"
     for target in "${TARGETS[@]}"; do
@@ -430,7 +441,7 @@ for arch in "${ARCHES[@]}"; do
             "$BIN/swift" build --build-system native \
             --package-path "$PACKAGE" --scratch-path "$SCRATCH" \
             --swift-sdks-path "$BUILD_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib \
-            -c release -debug-info-format none --target "$target"
+            -c release -debug-info-format none --target "$target" -Xswiftc -num-threads -Xswiftc 0
     done
     # The target's products: the release directory that has Modules and
     # isn't the host's (the macros' and plugins' builds are the host's).
@@ -441,36 +452,21 @@ for arch in "${ARCHES[@]}"; do
 
     step assemble "the family into $(static_rel_of "$arch")"
     # Every target the build compiled for the target: a directory of objects
-    # each, merged into one relocatable object (ld -r) before it is archived.
-    # A static archive's member is linked only when a symbol in it is wanted,
-    # and some of a module's objects define nothing a client names: a file
-    # of conformances alone (Foundation's NSNumberBridging.swift, Swift's
-    # numbers bridging to NSNumber for `as? Int`), which the runtime finds by
-    # its conformance records. One object a module, so a module linked at all
-    # is linked whole, conformances included, as Bazel links a library built
-    # from source (the linker's --gc-sections still drops what nothing
-    # reaches).
-    case "$PLATFORM" in
-        android) RELOCATABLE_LD=("$BIN/ld.lld" -r) ;;
-        wasi) RELOCATABLE_LD=("$BIN/wasm-ld" -r) ;;
-    esac
-    MERGED="$WORK/merged/$arch"
-    rm -rf "$MERGED"; mkdir -p "$MERGED"
+    # each (one for a Swift module, -num-threads 0 above; a C target's, one
+    # a source).
     modules=()
     for dir in "$PRODUCTS_DIR"/*.build; do
         module="$(basename "$dir" .build)"
         objects=("$dir"/*.o)
         [ -e "${objects[0]}" ] || continue
-        # An archive per module, of its objects merged in a sorted order, and
-        # llvm-ar's deterministic headers, so the same objects make the same
-        # archive.
+        # An archive per module, its members sorted and llvm-ar's
+        # deterministic headers, so the same objects make the same archive.
         rm -f "$OS_DIR/lib$module.a"
         # (Object names have spaces: FoundationEssentials' sources' do.)
         mapfile -t objects < <(printf '%s\n' "${objects[@]}" | LC_ALL=C sort)
         # (The objects carry no module hash, which differs with the build's
         # paths: Package.swift's ISOMER_SWIFT_SDK block.)
-        "${RELOCATABLE_LD[@]}" -o "$MERGED/$module.o" "${objects[@]}"
-        "$BIN/llvm-ar" crsD "$OS_DIR/lib$module.a" "$MERGED/$module.o"
+        "$BIN/llvm-ar" crsD "$OS_DIR/lib$module.a" "${objects[@]}"
         if [ -f "$PRODUCTS_DIR/Modules/$module.swiftmodule" ]; then
             mkdir -p "$OS_DIR/$module.swiftmodule"
             cp "$PRODUCTS_DIR/Modules/$module.swiftmodule" "$OS_DIR/$module.swiftmodule/${MODULE_TRIPLE[$arch]}.swiftmodule"
