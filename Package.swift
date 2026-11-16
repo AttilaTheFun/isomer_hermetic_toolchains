@@ -377,7 +377,10 @@ if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
             .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
         ]
         if resilientTargets.contains(target.name) {
-            target.swiftSettings! += [.unsafeFlags(["-enable-library-evolution"])]
+            // SwiftPM then emits a .swiftinterface and checks it by
+            // compiling it, which can't see the C shims' module; the SDK
+            // carries the binary modules alone.
+            target.swiftSettings! += [.unsafeFlags(["-enable-library-evolution", "-no-verify-emitted-module-interface"])]
         }
         if target.name == "FoundationInternationalization" {
             target.swiftSettings! += [
