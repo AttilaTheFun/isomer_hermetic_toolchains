@@ -373,7 +373,12 @@ if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
         .flatMap { ["-Xfrontend", "-public-autolink-library", "-Xfrontend", $0] }
     for target in package.targets where target.type == .regular && !cTargets.contains(target.name) {
         target.swiftSettings = (target.swiftSettings ?? []) + [
-            .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
+            // One object for the module (release builds split it a file each):
+            // a static archive's member is linked only when a symbol in it is
+            // wanted, and a file of conformances alone (NSNumberBridging.swift)
+            // defines nothing a client names (sdk/build.sh's build step).
+            .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen",
+                          "-num-threads", "0"]),
             .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
         ]
         if resilientTargets.contains(target.name) {

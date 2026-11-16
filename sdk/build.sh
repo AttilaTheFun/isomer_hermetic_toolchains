@@ -325,11 +325,12 @@ done
 cat >> "$WORK/deps/swift-collections/Package.swift" <<'EOF'
 
 // Isomer's Swift SDK build (isomer_hermetic_toolchains' sdk/build.sh): each
-// module carries its link name, and its objects no module hash, as
-// swift-foundation's do there.
+// module carries its link name, its objects no module hash, and is compiled
+// into one object, as swift-foundation's are there.
 for target in package.targets where target.type == .regular {
     target.swiftSettings = (target.swiftSettings ?? []) + [
-        .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
+        .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen",
+                      "-num-threads", "0"]),
     ]
 }
 EOF
@@ -422,7 +423,8 @@ for arch in "${ARCHES[@]}"; do
     # whole NDK installed (its compilers, x86_64 Linux's), where the native
     # one takes the SDK's sysroot alone, and leaves each target's objects in
     # a directory of its own, which is what the SDK's archives are made from.
-    # Each Swift module compiled whole into one object (-num-threads 0;
+    # Each Swift module compiled whole into one object (-num-threads 0, in
+    # Package.swift's ISOMER_SWIFT_SDK block and swift-collections' below:
     # release builds split it a file each): a static archive's member is
     # linked only when a symbol in it is wanted, and some of a module's files
     # define nothing a client names, a file of conformances alone
@@ -441,7 +443,7 @@ for arch in "${ARCHES[@]}"; do
             "$BIN/swift" build --build-system native \
             --package-path "$PACKAGE" --scratch-path "$SCRATCH" \
             --swift-sdks-path "$BUILD_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib \
-            -c release -debug-info-format none --target "$target" -Xswiftc -num-threads -Xswiftc 0
+            -c release -debug-info-format none --target "$target"
     done
     # The target's products: the release directory that has Modules and
     # isn't the host's (the macros' and plugins' builds are the host's).
@@ -452,7 +454,7 @@ for arch in "${ARCHES[@]}"; do
 
     step assemble "the family into $(static_rel_of "$arch")"
     # Every target the build compiled for the target: a directory of objects
-    # each (one for a Swift module, -num-threads 0 above; a C target's, one
+    # each (one for a Swift module, -num-threads 0; a C target's, one
     # a source).
     modules=()
     for dir in "$PRODUCTS_DIR"/*.build; do
