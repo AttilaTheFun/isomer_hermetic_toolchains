@@ -1,0 +1,77 @@
+name: Isomer SDK
+# Isomer's Swift SDKs (sdk/build.sh): Android's (aarch64, x86_64 and armv7 in
+# one bundle) and WebAssembly's (wasm32-unknown-wasip1), on each isomer-*
+# branch push and isomer-* tag; kept as artifacts, and attached with their
+# checksums to an isomer-* tag's release, where consumers fetch them by URL
+# (docs/hermetic_toolchains.md in AttilaTheFun/isomer). Actions pinned by
+# commit, the image by digest; only the tag's release job can write.
+on:
+  push:
+    branches: ['isomer-*']
+    tags: ['isomer-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [android, wasm]
+    runs-on: ubuntu-24.04-arm
+    # The image the builds were checked in (Swift's libraries, unzip, git):
+    # ghcr.io/attilathefun/visor-agent:0.41.2.
+    container: ghcr.io/attilathefun/visor-agent@sha256:849dcf6aeb16119e3b769b4f0c410b93ac58ed1e3b3ef2801f7534def3fbaaf0
+    timeout-minutes: 120
+    steps:
+      # The whole history: the pack step takes the bundle's times from the
+      # last commit to what goes into it (git log -- <paths>), which a
+      # shallow clone's one commit would answer with its own.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: sdk/build.sh ${{ matrix.sdk }} --out="$RUNNER_TEMP/sdk"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: isomer-${{ matrix.sdk }}-sdk
+          path: ${{ runner.temp }}/sdk/
+          compression-level: 0
+  release:
+    # An isomer-* tag's release gets both SDKs and their checksums; the only
+    # job that writes.
+    if: startsWith(github.ref, 'refs/tags/isomer-')
+    needs: sdk
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: isomer-*-sdk
+          merge-multiple: true
+          path: sdk
+      # A draft of the tag's release if it has none (published by hand), its
+      # notes the lines a consumer's MODULE.bazel registers the SDKs with.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          line() { echo "swift.$1(url = \"$base/$2\", sha256 = \"$(cut -d' ' -f1 "sdk/$2.sha256")\")"; }
+          {
+            echo "Swift 6.4.2's Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs'."
+            echo
+            echo '```starlark'
+            line android_sdk swift-6.4.2-RELEASE_android.artifactbundle.tar.gz
+            line wasm_sdk swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz
+            echo '```'
+          } > notes.md
+          cat notes.md
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md
+          # A published release's SDKs are never replaced: consumers pin their sha256.
+          [ "$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true ] ||
+            { echo "::error::$GITHUB_REF_NAME is published: its SDKs aren't replaced (consumers pin their sha256)"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" sdk/* --clobber -R "$GITHUB_REPOSITORY"
