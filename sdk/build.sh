@@ -509,7 +509,7 @@ rm -rf "$CHECK_SDKS"; mkdir -p "$CHECK_SDKS"
 tar -xzf "$ARCHIVE" -C "$CHECK_SDKS"
 set_up "$CHECK_SDKS"
 CLIENT="$WORK/client"
-rm -rf "$CLIENT"; mkdir -p "$CLIENT/Sources/Client"
+rm -rf "$CLIENT"; mkdir -p "$CLIENT/Sources/Client" "$CLIENT/Sources/Resilient"
 cat > "$CLIENT/Package.swift" <<'EOF'
 // swift-tools-version: 6.0
 import PackageDescription
@@ -524,8 +524,28 @@ let package = Package(
             // Swift's generic metadata code overruns wasm-ld's default.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"], .when(platforms: [.wasi]))]
         ),
+        // A library built for distribution: resilient, internal imports by
+        // default, `-library-level api`, where a public import of a module
+        // built without library evolution is an error. Isomer's modules in
+        // the SDK are resilient (Package.swift's ISOMER_SWIFT_SDK block).
+        .target(
+            name: "Resilient",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .enableUpcomingFeature("InternalImportsByDefault"),
+                .unsafeFlags(["-enable-library-evolution", "-library-level", "api"]),
+            ]
+        ),
     ]
 )
+EOF
+cat > "$CLIENT/Sources/Resilient/Resilient.swift" <<'EOF'
+public import Combine
+public import CoreGraphics
+public import Foundation
+
+public func inset(_ rect: CGRect, by amount: CGFloat) -> CGRect { rect.insetBy(dx: amount, dy: amount) }
+public func urls() -> PassthroughSubject<URL, Never> { PassthroughSubject() }
 EOF
 cat > "$CLIENT/Sources/Client/main.swift" <<'EOF'
 // Plain `import Foundation`, as any package's code: no dependency declared.

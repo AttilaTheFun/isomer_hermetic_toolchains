@@ -345,6 +345,14 @@ package.targets += [
 // FoundationEssentials calls them, and SwiftPM's `linkedLibrary` only reaches
 // this package's own links, never a client's.
 //
+// Isomer's own modules are built with library evolution, as an Apple SDK's
+// Foundation, CoreGraphics and Combine are, so that an app's library built
+// for distribution (resilient, `-library-level api`) can import them
+// publicly: isomer's `--@isomer//:library_evolution` builds its other
+// modules so (isomer's docs/library_evolution.md, which measured no frame
+// time and about 3% of the app's library for all of them). swift-foundation's
+// own modules and the collections stay as upstream builds them.
+//
 // FoundationInternationalization asks its clients for the SDK's ICU
 // (_FoundationICU, which it imports internally, so its module map's link
 // reaches no client), as the CMake build's `-public-autolink-library` does.
@@ -357,6 +365,10 @@ package.targets += [
 // segment, which it can't.)
 if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
     let cTargets: Set<String> = ["_FoundationCShims", "CWasiThreadIdentity"]
+    let resilientTargets: Set<String> = [
+        "Foundation", "FoundationNetworking", "IsomerFoundation", "IsomerDispatchTime",
+        "IsomerFoundationInternationalization", "CoreGraphics", "Combine",
+    ]
     let wasiEmulated = ["wasi-emulated-getpid", "wasi-emulated-signal", "wasi-emulated-mman"]
         .flatMap { ["-Xfrontend", "-public-autolink-library", "-Xfrontend", $0] }
     for target in package.targets where target.type == .regular && !cTargets.contains(target.name) {
@@ -364,6 +376,9 @@ if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
             .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
             .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
         ]
+        if resilientTargets.contains(target.name) {
+            target.swiftSettings! += [.unsafeFlags(["-enable-library-evolution"])]
+        }
         if target.name == "FoundationInternationalization" {
             target.swiftSettings! += [
                 .unsafeFlags(["-Xfrontend", "-public-autolink-library", "-Xfrontend", "_FoundationICU"]),
