@@ -258,8 +258,8 @@ let package = Package(
 // `--@isomer//foundation:internationalization` adds it: a module that
 // re-exports it, which Foundation re-exports when it can import it
 // (Foundation.swift's `canImport(IsomerFoundationInternationalization)`). A
-// build's choice, so an environment variable's; off by default, as isomer's
-// flag is, and in the SDK sdk/build.sh makes (its ICU comes later).
+// build's choice, so an environment variable's: off by default, on in the
+// -i18n variant of the SDKs sdk/build.sh makes, whose ICU is the SDK's own.
 let isomerInternationalization = Context.environment["ISOMER_FOUNDATION_INTERNATIONALIZATION"] == "1"
 
 package.products += [
@@ -345,6 +345,10 @@ package.targets += [
 // FoundationEssentials calls them, and SwiftPM's `linkedLibrary` only reaches
 // this package's own links, never a client's.
 //
+// FoundationInternationalization asks its clients for the SDK's ICU
+// (_FoundationICU, which it imports internally, so its module map's link
+// reaches no client), as the CMake build's `-public-autolink-library` does.
+//
 // And no module hash in the objects (`-disable-incremental-llvm-codegen`):
 // a hash of each object's LLVM module, which differs with the build's paths
 // while the rest of the object doesn't, read only by the compiler's
@@ -360,5 +364,10 @@ if Context.environment["ISOMER_SWIFT_SDK"] == "1" {
             .unsafeFlags(["-module-link-name", target.name, "-Xfrontend", "-disable-incremental-llvm-codegen"]),
             .unsafeFlags(wasiEmulated, .when(platforms: [.wasi])),
         ]
+        if target.name == "FoundationInternationalization" {
+            target.swiftSettings! += [
+                .unsafeFlags(["-Xfrontend", "-public-autolink-library", "-Xfrontend", "_FoundationICU"]),
+            ]
+        }
     }
 }

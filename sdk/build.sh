@@ -11,6 +11,12 @@
 #   android-<arch>   the same bundle with that architecture alone switched
 #                    (a quicker build; the others stay swift.org's)
 #   wasm             swift.org's WebAssembly bundle, wasm32-unknown-wasip1
+#   <any>-i18n       the same with FoundationInternationalization in
+#                    Foundation (dates, numbers, lists and measurements
+#                    formatted as on Apple's platforms) and the SDK's ICU
+#                    linked for it: android-i18n, wasm-i18n. Its archive is
+#                    named for the variant (…_android-i18n.artifactbundle
+#                    .tar.gz); the bundle inside is the plain one's name.
 #
 # Runs on Linux (Ubuntu 24.04, arm64 or x86_64: a Shireworks container of
 # Visor's agent image, or GitHub's ubuntu-24.04 runner), never on a Mac's own
@@ -47,17 +53,24 @@
 # Only static resources change: rules_swift links Swift statically. Android's
 # dynamic resources (swift-<arch>/) stay swift.org's; wasm has none apart
 # (its bundle's swift/ directory holds no Foundation).
-# FoundationInternationalization stays out (its ICU, lib_FoundationICU.a and
-# _foundation_unicode/, stays in for it), as isomer's
-# `--@isomer//foundation:internationalization` defaults to off.
+# FoundationInternationalization is in only the -i18n variant, where
+# Foundation re-exports it and it autolinks the SDK's own ICU
+# (lib_FoundationICU.a and _foundation_unicode/, which every variant keeps as
+# swift.org ships them). Without it an app links no ICU at all: the plain SDK
+# is for apps that format nothing with Foundation, the -i18n one for those
+# that do (ICU's data is most of an app's size: tens of megabytes, which the
+# web's icu_locales trims).
 set -euo pipefail
 umask 022
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage() { echo "usage: sdk/build.sh <android|android-aarch64|android-x86_64|android-armv7|wasm> [--out=DIR] [--work=DIR]" >&2; exit 2; }
+usage() { echo "usage: sdk/build.sh <android|android-aarch64|android-x86_64|android-armv7|wasm>[-i18n] [--out=DIR] [--work=DIR]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 TARGET=$1; shift
+# The variant: -i18n, FoundationInternationalization in Foundation.
+I18N=0
+case "$TARGET" in *-i18n) I18N=1; TARGET="${TARGET%-i18n}" ;; esac
 OUT="$REPO/.build/isomer-sdk/out"
 WORK="$REPO/.build/isomer-sdk/work"
 for arg in "$@"; do
@@ -96,6 +109,16 @@ case "$TARGET" in
         ;;
     *) echo "unknown SDK $TARGET" >&2; usage ;;
 esac
+# The archive is named for the variant, so a URL says which it is: swift.org's
+# name (`…_android.artifactbundle.tar.gz`, which rules_swift's default
+# download is), or with -i18n after the platform. rules_swift finds the
+# bundle inside by its one .artifactbundle directory, whatever the archive's
+# name, so the directory keeps swift.org's.
+if [ $I18N = 1 ]; then
+    ARCHIVE_NAME="${BUNDLE%.artifactbundle}-i18n.artifactbundle.tar.gz"
+else
+    ARCHIVE_NAME="$BUNDLE.tar.gz"
+fi
 
 # The triple SwiftPM is given (a key of the bundle's swift-sdk.json), and the
 # architecture's static resources, relative to the unpacked bundle. Android's
@@ -168,6 +191,13 @@ FOLD_INTO_FOUNDATION=(IsomerFoundation IsomerDispatchTime CWasiThreadIdentity)
 # The archives every build must have made.
 REQUIRED_ARCHIVES=(Foundation FoundationNetworking FoundationEssentials IsomerFoundation IsomerDispatchTime CoreGraphics Combine
     DequeModule InternalCollectionsUtilities OrderedCollections _RopeModule _FoundationCShims)
+# The -i18n variant: Foundation's dependency on IsomerFoundationInternationalization
+# (Package.swift's ISOMER_FOUNDATION_INTERNATIONALIZATION) builds it and
+# FoundationInternationalization, which clients autolink through Foundation's
+# re-export, as they do Foundation: nothing to fold. FoundationInternationalization
+# asks its clients for the SDK's ICU, _FoundationICU (Package.swift's
+# ISOMER_SWIFT_SDK block).
+[ $I18N = 0 ] || REQUIRED_ARCHIVES+=(FoundationInternationalization IsomerFoundationInternationalization)
 
 # Corelibs' Foundation in the stock SDK: its Swift modules, its archives and
 # what they alone link (CoreFoundation and its shims; on Android curl,
@@ -249,7 +279,7 @@ autolinks_of() {
 
 # --- fetch --------------------------------------------------------------------
 
-step fetch "$TARGET: ${ARCHES[*]}"
+step fetch "$TARGET$([ $I18N = 0 ] || echo ' (-i18n: with FoundationInternationalization)'): ${ARCHES[*]}"
 [ "$(uname -s)" = Linux ] || { echo "sdk/build.sh runs on Linux (a container), not $(uname -s)" >&2; exit 1; }
 mkdir -p "$DOWNLOADS" "$OUT"
 fetch "$TOOLCHAIN_URL" "$TOOLCHAIN_SHA256" "swift-$SWIFT_VERSION-RELEASE-$TOOLCHAIN_PLATFORM.tar.gz"
@@ -392,11 +422,12 @@ for arch in "${ARCHES[@]}"; do
     # whole NDK installed (its compilers, x86_64 Linux's), where the native
     # one takes the SDK's sysroot alone, and leaves each target's objects in
     # a directory of its own, which is what the SDK's archives are made from.
-    SCRATCH="$WORK/swiftpm/$TRIPLE"
+    SCRATCH="$WORK/swiftpm/$TRIPLE$([ $I18N = 0 ] || echo -i18n)"
     rm -rf "$SCRATCH"
     for target in "${TARGETS[@]}"; do
         echo "-- $target"
-        ISOMER_SWIFT_SDK=1 SWIFTCI_USE_LOCAL_DEPS="$WORK/deps" "$BIN/swift" build --build-system native \
+        ISOMER_SWIFT_SDK=1 ISOMER_FOUNDATION_INTERNATIONALIZATION=$I18N SWIFTCI_USE_LOCAL_DEPS="$WORK/deps" \
+            "$BIN/swift" build --build-system native \
             --package-path "$PACKAGE" --scratch-path "$SCRATCH" \
             --swift-sdks-path "$BUILD_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib \
             -c release -debug-info-format none --target "$target"
@@ -464,13 +495,13 @@ step pack
 # and its checksum, as they were.
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct -- Package.swift Sources Isomer sdk 2>/dev/null || true)}"
 [ -n "$EPOCH" ] || { echo "no commit time: set SOURCE_DATE_EPOCH" >&2; exit 1; }
-ARCHIVE="$OUT/$BUNDLE.tar.gz"
+ARCHIVE="$OUT/$ARCHIVE_NAME"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
 tar --sort=name --format=gnu --owner=0 --group=0 --numeric-owner \
     --mtime="@$EPOCH" --clamp-mtime -C "$PRUNED" -cf - "$BUNDLE" | gzip -n > "$ARCHIVE.part"
 mv "$ARCHIVE.part" "$ARCHIVE"
 SHA256="$(sha256_of "$ARCHIVE")"
-echo "$SHA256  $BUNDLE.tar.gz" > "$ARCHIVE.sha256"
+echo "$SHA256  $ARCHIVE_NAME" > "$ARCHIVE.sha256"
 
 # --- check ----------------------------------------------------------------------
 
@@ -517,6 +548,19 @@ EOF
 # first lines; URLSession's description is the object's address.
 EXPECTED_OUTPUT='03.00
 {"n":1} 6.0'
+# The -i18n variant's client also formats a date and a number in other
+# locales, through `import Foundation` alone: FoundationInternationalization
+# and ICU's data are there.
+if [ $I18N = 1 ]; then
+    cat >> "$CLIENT/Sources/Client/main.swift" <<'EOF'
+let epoch = Date(timeIntervalSince1970: 0)
+print(epoch.formatted(Date.FormatStyle(date: .long, time: .omitted, locale: Locale(identifier: "fr_FR"), timeZone: TimeZone(identifier: "UTC")!)))
+print(1234567.formatted(.number.locale(Locale(identifier: "de_DE"))))
+EOF
+    EXPECTED_OUTPUT="$EXPECTED_OUTPUT
+1 janvier 1970
+1.234.567"
+fi
 
 for arch in "${ARCHES[@]}"; do
     TRIPLE="$(triple_of "$arch")"
@@ -551,6 +595,12 @@ for arch in "${ARCHES[@]}"; do
     for l in CoreFoundation _FoundationCollections FoundationXML curl xml2 ssl crypto; do
         [[ " $autolinks " != *" -l$l "* ]] || bad="$bad -l$l autolinked;"
     done
+    # FoundationInternationalization and ICU: in the -i18n variant's every
+    # client, in no plain one's.
+    for l in FoundationInternationalization IsomerFoundationInternationalization _FoundationICU; do
+        if [ $I18N = 1 ]; then [[ " $autolinks " == *" -l$l "* ]] || bad="$bad no -l$l autolinked;"
+        else [[ " $autolinks " != *" -l$l "* ]] || bad="$bad -l$l autolinked;"; fi
+    done
     [ "$corelibs_c$corelibs_net$stock_collections" = 000 ] || bad="$bad corelibs symbols linked;"
     [ "$isomer_urlsession" -gt 0 ] && [ "$isomer_foundation" -gt 0 ] && [ "$essentials" -gt 0 ] || bad="$bad Isomer's Foundation not linked;"
     if [ "$PLATFORM" = wasi ]; then
@@ -563,7 +613,8 @@ for arch in "${ARCHES[@]}"; do
         done
         output="$("$BIN/wasmkit" run "$CLIENT_BIN" 2>&1)" || bad="$bad the program failed under WasmKit;"
         echo "the client under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
-        [ "$(printf '%s\n' "$output" | head -2)" = "$EXPECTED_OUTPUT" ] || bad="$bad the program printed something else;"
+        [ "$(printf '%s\n' "$output" | head -"$(printf '%s\n' "$EXPECTED_OUTPUT" | wc -l)")" = "$EXPECTED_OUTPUT" ] ||
+            bad="$bad the program printed something else;"
         # swift-testing beside this Foundation: `import Testing` with
         # `import Foundation` loads no overlay (above), and libTesting.a's
         # FoundationEssentials symbols are this one's. Its runner is called
@@ -619,6 +670,7 @@ for arch in "${ARCHES[@]}"; do
     echo "$(triple_of "$arch"): Swift modules in ${rel##*/}/$PLATFORM: ${SWIFT_MODULES[$arch]}"
     echo "  ${rel##*/}/$PLATFORM: $(human "${STOCK_STATIC_BYTES[$arch]}") stock, $(human "${NEW_STATIC_BYTES[$arch]}") now"
 done
+echo "variant: $([ $I18N = 1 ] && echo "-i18n (FoundationInternationalization and ICU)" || echo "plain (no ICU)")"
 echo "stock: $BUNDLE.tar.gz $(human "$(size_of "$DOWNLOADS/$BUNDLE.tar.gz")") ($(size_of "$DOWNLOADS/$BUNDLE.tar.gz") bytes) sha256 $SDK_SHA256"
 echo "built: $ARCHIVE"
 echo "       $(human "$(size_of "$ARCHIVE")") ($(size_of "$ARCHIVE") bytes) sha256 $SHA256"
