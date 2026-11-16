@@ -1,7 +1,8 @@
 name: Isomer SDK
 # Isomer's Swift SDKs (sdk/build.sh): Android's (aarch64, x86_64 and armv7 in
-# one bundle) and WebAssembly's (wasm32-unknown-wasip1), on each isomer-*
-# branch push and isomer-* tag; kept as artifacts, and attached with their
+# one bundle) and WebAssembly's (wasm32-unknown-wasip1), each plain and -i18n
+# (FoundationInternationalization and the SDK's ICU in Foundation), on each
+# isomer-* branch push and isomer-* tag; kept as artifacts, and attached with their
 # checksums to an isomer-* tag's release, where consumers fetch them by URL
 # (docs/hermetic_toolchains.md in AttilaTheFun/isomer). Actions pinned by
 # commit, the image by digest; only the tag's release job can write.
@@ -17,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sdk: [android, wasm]
+        sdk: [android, android-i18n, wasm, wasm-i18n]
     runs-on: ubuntu-24.04-arm
     # The image the builds were checked in (Swift's libraries, unzip, git):
     # ghcr.io/attilathefun/visor-agent:0.41.2.
@@ -38,8 +39,8 @@ jobs:
           path: ${{ runner.temp }}/sdk/
           compression-level: 0
   release:
-    # An isomer-* tag's release gets both SDKs and their checksums; the only
-    # job that writes.
+    # An isomer-* tag's release gets the four SDKs and their checksums; the
+    # only job that writes.
     if: startsWith(github.ref, 'refs/tags/isomer-')
     needs: sdk
     runs-on: ubuntu-24.04-arm
@@ -62,9 +63,22 @@ jobs:
           {
             echo "Swift 6.4.2's Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs'."
             echo
+            echo "A consumer's MODULE.bazel registers one SDK a platform, in its \`swift\` block. The plain SDKs link no ICU;"
+            echo "an app that formats dates, numbers or lists with Foundation takes the -i18n one, whose Foundation has"
+            echo "FoundationInternationalization and the SDK's ICU."
+            echo
+            echo "Android:"
+            echo
             echo '```starlark'
             line android_sdk swift-6.4.2-RELEASE_android.artifactbundle.tar.gz
+            line android_sdk swift-6.4.2-RELEASE_android-i18n.artifactbundle.tar.gz
+            echo '```'
+            echo
+            echo "The web (WebAssembly):"
+            echo
+            echo '```starlark'
             line wasm_sdk swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz
+            line wasm_sdk swift-6.4.2-RELEASE_wasm-i18n.artifactbundle.tar.gz
             echo '```'
           } > notes.md
           cat notes.md
