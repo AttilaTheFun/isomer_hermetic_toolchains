@@ -48,7 +48,23 @@
 #              what `import Foundation` autolinks, and that the program has
 #              Isomer's Foundation and nothing of corelibs'; on wasm the
 #              program is also run, under the toolchain's WasmKit, and so are
-#              two swift-testing tests that use Foundation
+#              two swift-testing tests that use Foundation. Then sdk-check
+#              (sdk/check, a Swift program built by the same toolchain) on
+#              the bundle, for each of its modules the build made:
+#                autolink   `import M` autolinks -lM, and every library an
+#                           import names is in the SDK or the platform's
+#                           sysroot (a module built without its link name
+#                           links nothing for a build system that lists no
+#                           SDK archive, as none does)
+#                pairing    a client of each module's public globals, statics
+#                           and conformances needs nothing the SDK's archives
+#                           don't define: module and archive from one build
+#                undefined  every archive's undefined symbols resolve against
+#                           the SDK's archives and the platform's libraries at
+#                           the SDK's minimum (Android's API $API libc, libm,
+#                           libdl and liblog stubs; WASI's libc)
+#              Any failure fails the build: no bundle is published that a
+#              consumer at the SDK's minimum can't link.
 #
 # Only static resources change: rules_swift links Swift statically. Android's
 # dynamic resources (swift-<arch>/) stay swift.org's; wasm has none apart
@@ -94,11 +110,18 @@ case "$TARGET" in
         BUNDLE=swift-$SWIFT_VERSION-RELEASE_android.artifactbundle
         SDK_URL=https://download.swift.org/swift-$SWIFT_VERSION-release/android-sdk/swift-$SWIFT_VERSION-RELEASE/$BUNDLE.tar.gz
         SDK_SHA256=4d6ad63ea74becd58e123ff58b1b48c3be5ec0db0dff0ea5abe37ac007dd3233
-        # isomer's NDK targets API 28 (MODULE.bazel's android.ndk), and
-        # rules_swift compiles for the NDK's API. The bundle names armv7's
-        # triple `armv7-unknown-linux-android28` (its swift-sdk.json), which
-        # the compiler takes as androideabi.
-        API=28
+        # The SDK's minimum Android API: what every library in it is
+        # compiled for, so that it links for an app at that API or later.
+        # swift.org builds its bundle at 23 (the lowest of its swift-sdk.json's
+        # triples, which rules_swift reads as the SDK's minimum and fails
+        # a target below), and so is everything built here: compiled for a
+        # higher API, swift-foundation takes Bionic's newer functions
+        # (getgrgid_r and getgrnam_r are API 24's), and an app at 23 fails
+        # to link. The pack step holds swift-sdk.json to it, and the check
+        # step resolves every archive against this API's libc. armv7's
+        # triple, `armv7-unknown-linux-android23`, the compiler takes as
+        # androideabi.
+        API=23
         ;;
     wasm)
         PLATFORM=wasi
@@ -303,6 +326,10 @@ if [ "$PLATFORM" = android ]; then
     fi
     echo "NDK $(sed -n 's/^Pkg.Revision = //p' "$NDK/source.properties"): its sysroot and clang headers"
 fi
+# The checks' program (the check step), for this machine, by this toolchain.
+"$BIN/swift" build --package-path "$REPO/sdk/check" --scratch-path "$WORK/sdk-check" -c release --product sdk-check
+SDK_CHECK="$WORK/sdk-check/release/sdk-check"
+[ -x "$SDK_CHECK" ] || { echo "sdk-check did not build" >&2; exit 1; }
 
 # --- deps ---------------------------------------------------------------------
 
@@ -351,6 +378,19 @@ step prune "the stock bundle, corelibs Foundation out of ${ARCHES[*]}"
 rm -rf "$PRUNED"; mkdir -p "$PRUNED"
 tar -xzf "$DOWNLOADS/$BUNDLE.tar.gz" -C "$PRUNED"
 declare -A STOCK_STATIC_BYTES MODULE_TRIPLE
+# The SDK's minimum Android API is its swift-sdk.json's lowest triple, which
+# rules_swift reads (and fails an app's NDK below): it must be the API the
+# libraries here are compiled for, or the bundle claims a level it can't
+# link at.
+if [ "$PLATFORM" = android ]; then
+    SDK_JSON="$PRUNED/$BUNDLE/swift-android/swift-sdk.json"
+    lowest="$(grep -oE '"[a-z0-9_]+-unknown-linux-android[0-9]+"' "$SDK_JSON" | grep -oE '[0-9]+"$' | tr -d '"' | sort -n | head -1)"
+    [ "$lowest" = "$API" ] || {
+        echo "swift-sdk.json's lowest triple is API $lowest, but the libraries are compiled for API $API: drop its triples below $API, or build at $lowest" >&2
+        exit 1
+    }
+    echo "minimum: Android API $API (swift-sdk.json's lowest triple, the libraries' target)"
+fi
 for arch in "${ARCHES[@]}"; do
     STATIC="$PRUNED/$BUNDLE/$(static_rel_of "$arch")"
     OS_DIR="$STATIC/$PLATFORM"
@@ -703,6 +743,50 @@ EOF
     fi
     [ -z "$bad" ] || { echo "FAIL ($TRIPLE):$bad" >&2; exit 1; }
     echo "PASS ($TRIPLE): one Foundation, Isomer's"
+
+    # sdk-check (sdk/check): autolink, pairing and undefined, over every
+    # Swift module the build made, against the platform's libraries at the
+    # SDK's minimum. What a final link supplies itself is allowed: section
+    # bounds (__start_/__stop_), the DSO handle, and on wasm the linker's
+    # globals and WASI's imports, which the host provides.
+    RESOURCES="$CHECK_SDKS/$BUNDLE/$(static_rel_of "$arch")"
+    check_args=(--bin "$BIN" --target "$TRIPLE" --resource-dir "$RESOURCES" --archives "$RESOURCES/$PLATFORM")
+    resolve_args=(--allow __dso_handle --allow-prefix __start_ --allow-prefix __stop_)
+    case "$PLATFORM" in
+        android)
+            case "$arch" in
+                aarch64) ndk_triple=aarch64-linux-android; rt_arch=aarch64 ;;
+                x86_64) ndk_triple=x86_64-linux-android; rt_arch=x86_64 ;;
+                armv7) ndk_triple=arm-linux-androideabi; rt_arch=arm ;;
+            esac
+            NDK_PREBUILT="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+            NDK_LIB="$NDK_PREBUILT/sysroot/usr/lib/$ndk_triple"
+            CLANG_LIB="$(ls -d "$NDK_PREBUILT"/lib/clang/*/lib/linux | head -1)"
+            check_args+=(--sdk "$CHECK_SDKS/$BUNDLE/swift-android/ndk-sysroot")
+            # libc, libm, libdl, liblog and the rest at the SDK's API (the
+            # stubs an app's link at that API reads), the NDK's static C++
+            # runtime, compiler-rt's builtins and the unwinder.
+            resolve_args+=(--resolve-against "$NDK_LIB/$API" --resolve-against "$NDK_LIB/libc++_static.a"
+                --resolve-against "$NDK_LIB/libc++abi.a" --resolve-against "$CLANG_LIB/libclang_rt.builtins-$rt_arch-android.a"
+                --resolve-against "$CLANG_LIB/$rt_arch/libunwind.a")
+            library_dirs=(--library-dir "$NDK_LIB/$API" --library-dir "$NDK_LIB")
+            ;;
+        wasi)
+            WASI_SDK="$CHECK_SDKS/$BUNDLE/swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk"
+            check_args+=(--sdk "$WASI_SDK")
+            resolve_args+=(--resolve-against "$WASI_SDK/lib/wasm32-wasip1"
+                --resolve-against "$RESOURCES/clang/lib/wasip1/libclang_rt.builtins-wasm32.a"
+                --allow-prefix __imported_wasi_ --allow __main_argc_argv)
+            for g in __stack_pointer __heap_base __heap_end __data_end __global_base __memory_base __table_base \
+                __tls_base __tls_size __tls_align __indirect_function_table; do resolve_args+=(--allow "$g"); done
+            library_dirs=(--library-dir "$WASI_SDK/lib/wasm32-wasip1")
+            ;;
+    esac
+    module_args=()
+    for m in ${SWIFT_MODULES[$arch]}; do module_args+=(--module "$m"); done
+    "$SDK_CHECK" undefined "${check_args[@]}" "${resolve_args[@]}"
+    "$SDK_CHECK" autolink "${check_args[@]}" "${module_args[@]}" "${library_dirs[@]}"
+    "$SDK_CHECK" pairing "${check_args[@]}" "${resolve_args[@]}" "${module_args[@]}"
 done
 
 # --- the result -------------------------------------------------------------------

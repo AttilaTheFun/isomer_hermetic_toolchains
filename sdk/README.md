@@ -1,0 +1,52 @@
+# Isomer's Swift SDKs
+
+swift.org's Swift SDKs for Android and WebAssembly with corelibs Foundation
+taken out and Isomer's Foundation family put in (docs/hermetic_toolchains.md
+in AttilaTheFun/isomer says why and how a consumer registers them).
+`sdk/build.sh <sdk>` builds one in a Linux container; CI
+(.github/workflows/isomer_sdk.yml) builds all four on each push to an
+`isomer-*` branch and drafts a release on an `isomer-*` tag.
+
+| SDK | archive | minimum |
+| --- | --- | --- |
+| Android, plain | `swift-6.4.2-RELEASE_android.artifactbundle.tar.gz` | API 23 (aarch64, x86_64, armv7) |
+| Android, -i18n | `swift-6.4.2-RELEASE_android-i18n.artifactbundle.tar.gz` | API 23 (aarch64, x86_64, armv7) |
+| WebAssembly, plain | `swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz` | wasm32-unknown-wasip1 |
+| WebAssembly, -i18n | `swift-6.4.2-RELEASE_wasm-i18n.artifactbundle.tar.gz` | wasm32-unknown-wasip1 |
+
+## The minimum Android API
+
+The Android SDKs' minimum is API 23, swift.org's: every library in them is
+compiled for `<arch>-unknown-linux-android23` with NDK r30 (sdk/build.sh's
+`API`), so an app at minSdk 23 or later links them. It is written in the
+bundle as its `swift-sdk.json`'s lowest target triple
+(`aarch64-unknown-linux-android23` and its siblings), which rules_swift reads
+as the SDK's minimum and fails an Android target whose NDK is below it. The
+build fails if the two ever differ. (isomer-6.4.2.1's Android SDKs were
+compiled for API 28 while their swift-sdk.json said 23: an app at 23 failed
+to link, `getgrgid_r` and `getgrnam_r` undefined.)
+
+## The checks
+
+Every SDK build checks its bundle before it is packed for release
+(sdk/build.sh's check step); a failure fails the build:
+
+- **the client**: a package that imports Foundation, FoundationNetworking,
+  Combine and CoreGraphics builds and links against the bundle, autolinks
+  Isomer's libraries and none of corelibs', and on wasm runs under WasmKit
+  (with swift-testing beside it);
+- **sdk-check** (`sdk/check`, a Swift program the same toolchain builds),
+  for each architecture and each Swift module the build made:
+  - `autolink`: `import M` autolinks `-lM`, and every library an import
+    names is in the SDK or the platform's sysroot;
+  - `pairing`: a client referencing every public global, static and
+    conformance of the module compiles against the SDK and needs nothing
+    its archives don't define, so each binary module and its archive come
+    from one build;
+  - `undefined`: every archive's undefined symbols resolve against the
+    SDK's archives and the platform's libraries at its minimum (Android's
+    API-23 libc, libm, libdl and liblog stubs, the NDK's C++ runtime and
+    compiler-rt; WASI's libc).
+
+`sdk-check --help` (and each subcommand's) says what it takes; the check
+step shows the arguments for each platform.
