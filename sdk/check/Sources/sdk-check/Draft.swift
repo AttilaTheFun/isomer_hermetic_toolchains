@@ -48,6 +48,9 @@ struct Draft: ParsableCommand {
     @Option(help: "The release line, the Swift release the SDKs are (sdk/build.sh's SWIFT_VERSION by default).")
     var line: String?
 
+    @Option(help: "The tags' prefix: a release is <prefix><line>.N.")
+    var tagPrefix: String = "isomer-"
+
     @Option(help: "The checkout, for sdk/build.sh's SWIFT_VERSION and the commits since the last release.")
     var checkout: String = "."
 
@@ -72,14 +75,14 @@ struct Draft: ParsableCommand {
         let built = try builtSDKs()
         let releases = try github.releases()
         let tags = try github.tags()
-        let version = Self.version(line: line, commit: commit, releases: releases, tags: tags)
-        let tag = "isomer-\(version)"
+        let version = Self.version(prefix: tagPrefix, line: line, commit: commit, releases: releases, tags: tags)
+        let tag = "\(tagPrefix)\(version)"
         print("draft: \(tag) on \(commit), \(built.count) SDKs from \(assets)\(dryRun ? " (dry run)" : "")")
         let same = releases.filter { $0.tag_name == tag }
         if let published = same.first(where: { !$0.draft }) {
             throw CheckFailure("\(tag) is published (release \(published.id)): its SDKs aren't replaced (consumers pin their sha256)")
         }
-        let previous = Self.previousRelease(line: line, before: version, releases: releases)
+        let previous = Self.previousRelease(prefix: tagPrefix, line: line, before: version, releases: releases)
         let notes = try notes(version: version, tag: tag, built: built, previous: previous)
 
         if dryRun {
@@ -113,27 +116,27 @@ struct Draft: ParsableCommand {
     }
 
     /// N of `isomer-<line>.N`, if `tag` is one.
-    static func number(of tag: String, line: String) -> Int? {
-        let prefix = "isomer-\(line)."
+    static func number(of tag: String, prefix tagPrefix: String, line: String) -> Int? {
+        let prefix = "\(tagPrefix)\(line)."
         guard tag.hasPrefix(prefix), let n = Int(tag.dropFirst(prefix.count)), n >= 0 else { return nil }
         return n
     }
 
     /// `<line>.N`: this commit's release's N, else one past the highest.
-    static func version(line: String, commit: String, releases: [GitHub.Release], tags: [String]) -> String {
-        let numbered = releases.compactMap { release in number(of: release.tag_name, line: line).map { (release, $0) } }
+    static func version(prefix: String, line: String, commit: String, releases: [GitHub.Release], tags: [String]) -> String {
+        let numbered = releases.compactMap { release in number(of: release.tag_name, prefix: prefix, line: line).map { (release, $0) } }
         if let mine = numbered.filter({ $0.0.target_commitish == commit }).map(\.1).max() {
             return "\(line).\(mine)"
         }
-        let highest = (numbered.map(\.1) + tags.compactMap { number(of: $0, line: line) }).max() ?? 0
+        let highest = (numbered.map(\.1) + tags.compactMap { number(of: $0, prefix: prefix, line: line) }).max() ?? 0
         return "\(line).\(highest + 1)"
     }
 
     /// The latest published release of the line before this one.
-    static func previousRelease(line: String, before version: String, releases: [GitHub.Release]) -> String? {
+    static func previousRelease(prefix: String, line: String, before version: String, releases: [GitHub.Release]) -> String? {
         let mine = Int(version.split(separator: ".").last ?? "") ?? 0
         return releases.filter { !$0.draft }
-            .compactMap { release in number(of: release.tag_name, line: line).map { (release.tag_name, $0) } }
+            .compactMap { release in number(of: release.tag_name, prefix: prefix, line: line).map { (release.tag_name, $0) } }
             .filter { $0.1 < mine }.max { $0.1 < $1.1 }?.0
     }
 
@@ -147,7 +150,9 @@ struct Draft: ParsableCommand {
 
     /// Every archive in `assets` with its checksum file, and nothing else.
     func builtSDKs() throws -> [SDK] {
-        let names = try FileManager.default.contentsOfDirectory(atPath: assets).sorted()
+        // The plain SDK before its -i18n one.
+        let names = try FileManager.default.contentsOfDirectory(atPath: assets)
+            .sorted { $0.replacingOccurrences(of: "-i18n", with: "~") < $1.replacingOccurrences(of: "-i18n", with: "~") }
         var sdks: [SDK] = []
         for name in names where name.hasSuffix(".tar.gz") {
             let checksum = "\(assets)/\(name).sha256"
