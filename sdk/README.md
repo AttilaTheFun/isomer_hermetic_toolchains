@@ -73,7 +73,15 @@ which in a container job names the runner's directory; the emulator job
 builds sdk_smoke on the runner itself, with libcurl's development package
 for its FoundationNetworking. A build is tried twice (sdk_smoke) and its
 downloads retried (Bazel), as Maven Central has answered 404 for artifacts
-it has. Then `sdk-check draft` drafts the release:
+it has, and tried at Google's mirror of Central after it (isomer's
+tools/ci/downloader.cfg). The smoke jobs keep Bazel's caches in GitHub's
+(isomer_sdk.yml's header): the downloads, sdk_smoke's own build, and the
+consumer's build with the SDKs isomer registers now, by everything it is
+made of (isomer's graph, those SDKs' URLs and sha256s, the consumer's
+MODULE.bazel and Package.resolved, the variant, the image) and restored only
+by that exact key. The upgraded builds, against the candidate SDKs, have no
+disk cache: the upgrade in one output base is what the run proves, so they
+are built each time. Then `sdk-check draft` drafts the release:
 
 - its version, `<Swift version>.N` (`sdk-check version`): the N of a
   release already drafted on this commit (the run repeated), else one past
