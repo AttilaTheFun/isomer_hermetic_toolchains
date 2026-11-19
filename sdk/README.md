@@ -60,8 +60,14 @@ builds a consumer against them as an app fetches them, by URL and sha256:
 isomer main's tests/sdk_consumer and tools/ci/sdk_smoke, the SDKs served
 from the job (a draft's assets need a token to download), plain and -i18n at
 API 23 and 28, upgraded in one output base from the SDKs isomer registers
-now, each cell's x86_64 APK run on an emulator at its API. Then
-`sdk-check draft` drafts the release:
+now, each cell's x86_64 APK run on an emulator at its API. isomer is
+checked out in `isomer/` and every smoke step runs there, so the cell's
+`--isomer` and the examples' MODULE.bazel are isomer's, and Bazel runs with
+`--symlink_prefix=/` (at isomer's root and in the consumer): isomer's
+Package.swift has a target at "." that would take what is under Bazel's
+convenience symlinks for resources, and rules_swift_package_manager copies
+that package, the consumer's directory with it, into the consumer's output
+base. Then `sdk-check draft` drafts the release:
 
 - its version, `<Swift version>.N`: the N of a release already drafted on
   this commit (the run repeated: that draft is replaced), else one past the
