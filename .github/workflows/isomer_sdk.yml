@@ -60,7 +60,8 @@ jobs:
       # Its checks' PASS lines kept for the draft's notes.
       - run: |
           sdk/build.sh ${{ matrix.sdk }} --out="$RUNNER_TEMP/sdk" 2>&1 | tee "$RUNNER_TEMP/build.log"
-          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/build.log" | sed 's/^/${{ matrix.sdk }}: /' > "$RUNNER_TEMP/results/sdk-${{ matrix.sdk }}.txt"
+          mkdir -p out/results out/logs && grep '^PASS' "$RUNNER_TEMP/build.log" | sed 's/^/${{ matrix.sdk }}: /' > "out/results/sdk-${{ matrix.sdk }}.txt"
+          cp "$RUNNER_TEMP/build.log" "out/logs/sdk-${{ matrix.sdk }}.log"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: isomer-${{ matrix.sdk }}-sdk
@@ -70,7 +71,12 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: results-sdk-${{ matrix.sdk }}
-          path: ${{ runner.temp }}/results/
+          path: out/results/
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-sdk-${{ matrix.sdk }}
+          path: out/logs/
           retention-days: 1
 
   # A consumer of the SDKs just built, as an app fetches them: isomer main's
@@ -125,16 +131,17 @@ jobs:
           busybox httpd -p 127.0.0.1:8000 -h "$RUNNER_TEMP/sdk"
       - name: The consumer with the SDKs isomer registers now
         run: |
-          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell --isomer "$PWD" --sdk-base-url "$(sed -n 's|^ *url = "\(.*\)/swift-6.4.2-RELEASE_android.*|\1|p' examples/MODULE.bazel | head -1)" --variant ${{ matrix.variant }} --api 28
-          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --bazel-arg=--experimental_repository_downloader_retries=3 --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer
+          { bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell --isomer "$PWD" --sdk-base-url "$(sed -n 's|^ *url = "\(.*\)/swift-6.4.2-RELEASE_android.*|\1|p' examples/MODULE.bazel | head -1)" --variant ${{ matrix.variant }} --api 28 &&
+            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --bazel-arg=--experimental_repository_downloader_retries=3 --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer; } | tee -a "$RUNNER_TEMP/smoke.log"
       - name: Upgraded to these SDKs, by URL
         run: |
           cell="--isomer $PWD --sdk-base-url http://127.0.0.1:8000 --variant ${{ matrix.variant }} --api ${{ matrix.api }}"
           retries=--bazel-arg=--experimental_repository_downloader_retries=3
           { bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ $retries --startup-arg=--output_base=/mnt/consumer &&
-            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell --rules-android 0.7.3 && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ $retries --no-wasm --out "$GITHUB_WORKSPACE/out/apk" --startup-arg=--output_base=/mnt/consumer; } | tee "$RUNNER_TEMP/smoke.log"
+            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell --rules-android 0.7.3 && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ $retries --no-wasm --out "$GITHUB_WORKSPACE/out/apk" --startup-arg=--output_base=/mnt/consumer; } | tee -a "$RUNNER_TEMP/smoke.log"
           mkdir -p "$GITHUB_WORKSPACE/out/results" && grep '^PASS' "$RUNNER_TEMP/smoke.log" | sort -u | sed 's/^/consumer, ${{ matrix.variant }}, API ${{ matrix.api }}: /' > "$GITHUB_WORKSPACE/out/results/smoke-${{ matrix.variant }}-${{ matrix.api }}.txt"
           cp tests/sdk_consumer/cell.bzl "$GITHUB_WORKSPACE/out/apk/"
+          mkdir -p "$GITHUB_WORKSPACE/out/logs" && cp "$RUNNER_TEMP/smoke.log" "$GITHUB_WORKSPACE/out/logs/smoke-${{ matrix.variant }}-${{ matrix.api }}.log"
       # Uploaded from the workspace (paths relative to it): in a container
       # job ${{ runner.temp }} names the runner's directory, not the
       # container's /__w/_temp, and of two such paths only one was found.
@@ -147,6 +154,11 @@ jobs:
         with:
           name: smoke-apk-${{ matrix.variant }}-${{ matrix.api }}
           path: out/apk/
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-smoke-${{ matrix.variant }}-${{ matrix.api }}
+          path: out/logs/
           retention-days: 1
 
   # Each cell's x86_64 APK on an emulator at its API, on GitHub's KVM
@@ -187,14 +199,23 @@ jobs:
         run: |
           bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- run-android --adb "$ANDROID_HOME/platform-tools/adb" --serial "$(cat "$RUNNER_TEMP/serial")" --apk "$GITHUB_WORKSPACE/out/apk/smoke_x86_64.apk" | tee "$RUNNER_TEMP/run.log"
           mkdir -p "$GITHUB_WORKSPACE/out/results" && grep '^PASS' "$RUNNER_TEMP/run.log" | sed 's/^/consumer, ${{ matrix.variant }}: /' > "$GITHUB_WORKSPACE/out/results/emulator-${{ matrix.variant }}-${{ matrix.api }}.txt"
+          mkdir -p "$GITHUB_WORKSPACE/out/logs" && cp "$RUNNER_TEMP/run.log" "$GITHUB_WORKSPACE/out/logs/emulator-${{ matrix.variant }}-${{ matrix.api }}.log"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: results-emulator-${{ matrix.variant }}-${{ matrix.api }}
           path: out/results/
           retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-emulator-${{ matrix.variant }}-${{ matrix.api }}
+          path: out/logs/
+          retention-days: 1
 
   # The draft release (sdk-check draft, sdk/check/Sources/sdk-check/Draft.swift):
   # the only job that writes.
+  # It carries the run's proof, proof.zip (Reviews' format 2, sdk-check
+  # proof: a tests item a target each SDK was checked for, a consumer's cell
+  # and an emulator's, with the jobs' logs), which Reviews' Release waits for.
   release:
     needs: [sdk, smoke, smoke-android]
     runs-on: ubuntu-24.04-arm
@@ -210,14 +231,33 @@ jobs:
         with:
           pattern: isomer-*-sdk
           merge-multiple: true
-          path: ${{ runner.temp }}/sdk
+          path: out/sdk
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: results-*
           merge-multiple: true
-          path: ${{ runner.temp }}/results
+          path: out/results
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: logs-*
+          merge-multiple: true
+          path: out/logs
+      # build_tools' proof-diff (a tagged release), for proof-diff.json.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AttilaTheFun/build_tools
+          ref: v0.2.0
+          path: out/build_tools
+      # The draft's version, its proof (sdk-check proof), the proof's
+      # comparison with the release before (proof-diff, PROOF_TAG_PREFIX
+      # isomer-), then the draft with all of it (sdk-check draft).
       - env:
           GH_TOKEN: ${{ github.token }}
+          PROOF_TAG_PREFIX: isomer-
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          swift run --package-path sdk/check -c release sdk-check draft --assets "$RUNNER_TEMP/sdk" --results "$RUNNER_TEMP/results"
+          swift build --package-path sdk/check -c release && swift build --package-path out/build_tools -c release --product proof-diff
+          version="$(sdk/check/.build/release/sdk-check version)"
+          sdk/check/.build/release/sdk-check proof --logs out/logs --out out/proof --version "$version"
+          out/build_tools/.build/release/proof-diff make out/proof/proof.zip
+          sdk/check/.build/release/sdk-check draft --assets out/sdk --results out/results --proof out/proof

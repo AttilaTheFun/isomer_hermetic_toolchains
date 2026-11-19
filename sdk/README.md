@@ -75,10 +75,18 @@ for its FoundationNetworking. A build is tried twice (sdk_smoke) and its
 downloads retried (Bazel), as Maven Central has answered 404 for artifacts
 it has. Then `sdk-check draft` drafts the release:
 
-- its version, `<Swift version>.N`: the N of a release already drafted on
-  this commit (the run repeated: that draft is replaced), else one past the
-  highest `isomer-<Swift version>.N` among the releases and tags;
-- its assets, the four SDKs and their `.sha256` files;
+- its version, `<Swift version>.N` (`sdk-check version`): the N of a
+  release already drafted on this commit (the run repeated), else one past
+  the highest published `isomer-<Swift version>.N` release or tag: a draft
+  is no release, so an unpublished draft of another commit is replaced by
+  this one, under its version;
+- its assets, the four SDKs and their `.sha256` files, and the run's proof:
+  `proof.zip` (Reviews' format 2, `sdk-check proof`: a `tests` item for each
+  SDK's targets, `check-<bundle>-<arch>`, each consumer cell,
+  `smoke-<variant>-api<N>`, and each emulator cell,
+  `emulator-<variant>-api<N>`, every one with its job's log), with
+  build_tools' `proof-diff.json` comparing it with the release before.
+  Reviews' Release waits for a commit's proof;
 - its notes, the checks the run passed, each SDK's SHA-256, the lines a
   consumer's MODULE.bazel registers them with, and the commits since the
   release before;

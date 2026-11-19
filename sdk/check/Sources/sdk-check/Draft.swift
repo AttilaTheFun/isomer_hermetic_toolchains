@@ -36,6 +36,9 @@ struct Draft: ParsableCommand {
     @Option(help: "A directory of the run's check results (*.txt, a check a line, as sdk/build.sh and tools/ci/sdk_smoke print them).")
     var results: String?
 
+    @Option(help: "The run's proof (sdk-check proof's --out: proof.json, proof.zip, and proof-diff.json if build_tools' proof-diff made one), attached to the draft.")
+    var proof: String?
+
     @Option(help: "owner/name (GITHUB_REPOSITORY by default).")
     var repository: String = ProcessInfo.processInfo.environment["GITHUB_REPOSITORY"] ?? ""
 
@@ -83,21 +86,42 @@ struct Draft: ParsableCommand {
             throw CheckFailure("\(tag) is published (release \(published.id)): its SDKs aren't replaced (consumers pin their sha256)")
         }
         let previous = Self.previousRelease(prefix: tagPrefix, line: line, before: version, releases: releases)
-        let notes = try notes(version: version, tag: tag, built: built, previous: previous)
+        // The proof (sdk-check proof, and build_tools' proof-diff beside it),
+        // which Reviews' Release waits for: of this version and commit, and
+        // passed, or no draft.
+        var proof: DraftProof?
+        if let proofDirectory = self.proof {
+            let loaded = try DraftProof(directory: proofDirectory)
+            guard loaded.version == version, loaded.commit == commit else {
+                throw CheckFailure("the proof in \(proofDirectory) is of \(loaded.version) at \(loaded.commit), not \(version) at \(commit)")
+            }
+            if let failed = loaded.failed.first { throw CheckFailure("the proof's \(failed) failed: no draft") }
+            proof = loaded
+            print("proof: \(loaded.items) tests items, \(loaded.tests) checks\(loaded.diff == nil ? "" : ", and proof-diff.json")")
+        }
+        let notes = try notes(version: version, tag: tag, built: built, previous: previous, proof: proof)
 
         if dryRun {
-            for old in same { print("would delete the earlier draft \(old.id) of \(tag)") }
+            for old in same { print("would delete the earlier draft \(old.id) of \(tag) (on \(old.target_commitish))") }
             print("would draft \(tag) on \(commit) and upload:")
             for sdk in built { print("  \(sdk.name) (sha256 \(sdk.sha256)) and \(sdk.name).sha256") }
+            if let proof { print("  proof.zip\(proof.diff == nil ? "" : " and proof-diff.json")") }
             print("notes:")
             print(notes.split(separator: "\n", omittingEmptySubsequences: false).map { "  | \($0)" }.joined(separator: "\n"))
             return
         }
-        // A draft of this tag from an earlier run of this commit goes.
-        for old in same { try github.deleteRelease(old.id); print("deleted the earlier draft \(old.id) of \(tag)") }
+        // A draft of this tag goes, from an earlier run of this commit or of
+        // another (a draft is no release until it is published).
+        for old in same { try github.deleteRelease(old.id); print("deleted the earlier draft \(old.id) of \(tag) (on \(old.target_commitish))") }
         let release = try github.createDraft(tag: tag, commit: commit, name: "Isomer's Swift SDKs \(version)", notes: notes)
         for sdk in built {
             for (name, path) in [(sdk.name, sdk.path), ("\(sdk.name).sha256", "\(sdk.path).sha256")] {
+                try github.uploadAsset(release.id, name: name, path: path)
+                print("  uploaded \(name)")
+            }
+        }
+        if let proof {
+            for (name, path) in [("proof.zip", proof.zip)] + (proof.diff.map { [("proof-diff.json", $0)] } ?? []) {
                 try github.uploadAsset(release.id, name: name, path: path)
                 print("  uploaded \(name)")
             }
@@ -122,13 +146,17 @@ struct Draft: ParsableCommand {
         return n
     }
 
-    /// `<line>.N`: this commit's release's N, else one past the highest.
+    /// `<line>.N`: this commit's release's N (a draft of it made before),
+    /// else one past the highest *published* release or tag: a draft has no
+    /// tag yet and is replaced, so an unpublished isomer-6.4.2.2 of another
+    /// commit leaves this one 6.4.2.2 too, not 6.4.2.3.
     static func version(prefix: String, line: String, commit: String, releases: [GitHub.Release], tags: [String]) -> String {
         let numbered = releases.compactMap { release in number(of: release.tag_name, prefix: prefix, line: line).map { (release, $0) } }
         if let mine = numbered.filter({ $0.0.target_commitish == commit }).map(\.1).max() {
             return "\(line).\(mine)"
         }
-        let highest = (numbered.map(\.1) + tags.compactMap { number(of: $0, prefix: prefix, line: line) }).max() ?? 0
+        let published = numbered.filter { !$0.0.draft }.map(\.1)
+        let highest = (published + tags.compactMap { number(of: $0, prefix: prefix, line: line) }).max() ?? 0
         return "\(line).\(highest + 1)"
     }
 
@@ -171,7 +199,7 @@ struct Draft: ParsableCommand {
 
     // MARK: The notes
 
-    func notes(version: String, tag: String, built: [SDK], previous: String?) throws -> String {
+    func notes(version: String, tag: String, built: [SDK], previous: String?, proof: DraftProof? = nil) throws -> String {
         let base = "https://github.com/\(repository)/releases/download/\(tag)"
         var lines = [
             "Isomer's Swift SDKs \(version): Swift \(version.split(separator: ".").prefix(3).joined(separator: "."))'s Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs', proposed for release by run \(runID) on \(commit).",
@@ -185,6 +213,9 @@ struct Draft: ParsableCommand {
         let results = try resultLines()
         if !results.isEmpty {
             lines += ["", "The run's results:", ""] + results.map { "- \($0)" }
+        }
+        if let proof {
+            lines += ["", "The proof, `proof.zip` (Reviews' format 2): \(proof.items) tests items (each SDK's targets, the consumer's cells, the emulator's), \(proof.tests) checks, all passed, each with its job's log\(proof.diff == nil ? "" : "; `proof-diff.json` compares it with the release before")."]
         }
         lines += ["", "## SHA-256", "", "| SDK | SHA-256 |", "| --- | --- |"]
         lines += built.map { "| `\($0.name)` | `\($0.sha256)` |" }
@@ -313,5 +344,77 @@ struct GitHub {
             throw CheckFailure("\(method) \(url): HTTP \(result.status) \(String(decoding: result.data.prefix(500), as: UTF8.self))")
         }
         return result.data
+    }
+}
+
+/// A proof as `sdk-check proof` leaves it (proof.json, proof.zip) with
+/// build_tools' proof-diff.json beside it if made, read for the draft.
+struct DraftProof {
+    var version: String
+    var commit: String
+    var items: Int
+    var tests: Int
+    var failed: [String]
+    var zip: String
+    var diff: String?
+
+    init(directory: String) throws {
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "\(directory)/proof.json")))
+        guard let proof = json as? [String: Any], proof["format"] as? Int == 2, let items = proof["items"] as? [[String: Any]] else {
+            throw CheckFailure("\(directory)/proof.json is no format-2 proof")
+        }
+        zip = "\(directory)/proof.zip"
+        guard FileManager.default.fileExists(atPath: zip) else { throw CheckFailure("no proof.zip in \(directory)") }
+        let diffPath = "\(directory)/proof-diff.json"
+        diff = FileManager.default.fileExists(atPath: diffPath) ? diffPath : nil
+        version = proof["version"] as? String ?? ""
+        commit = proof["commit"] as? String ?? ""
+        self.items = items.count
+        tests = items.reduce(0) { $0 + ($1["tests"] as? Int ?? 0) }
+        failed = items.filter { $0["result"] as? String != "passed" }.compactMap { $0["id"] as? String }
+    }
+}
+
+/// The version a release run's draft will be (`sdk-check draft`'s), for the
+/// proof made before it: `<line>.N`.
+struct Version: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Prints the version this commit's draft release will be (<Swift version>.N), as sdk-check draft numbers it."
+    )
+
+    @Option(help: "owner/name (GITHUB_REPOSITORY by default).")
+    var repository: String = ProcessInfo.processInfo.environment["GITHUB_REPOSITORY"] ?? ""
+
+    @Option(help: "The commit (GITHUB_SHA by default).")
+    var commit: String = ProcessInfo.processInfo.environment["GITHUB_SHA"] ?? ""
+
+    @Option(help: "The release line (sdk/build.sh's SWIFT_VERSION by default).")
+    var line: String?
+
+    @Option(help: "The checkout, for sdk/build.sh's SWIFT_VERSION.")
+    var checkout: String = "."
+
+    @Option(name: .customLong("releases"), help: "The releases as GitHub's API lists them, from a file, in place of asking (a rehearsal).")
+    var releasesFile: String?
+
+    @Option(name: .customLong("tags"), help: "The tags as GitHub's API lists them, from a file.")
+    var tagsFile: String?
+
+    @Option(help: "The tags' prefix: a release is <prefix><line>.N.")
+    var tagPrefix: String = "isomer-"
+
+    @Option(help: "GitHub's REST API.")
+    var api: String = "https://api.github.com"
+
+    func run() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let github = GitHub(api: api, uploads: "", repository: repository, token: environment["GITHUB_TOKEN"] ?? environment["GH_TOKEN"])
+        let line = try self.line ?? Draft.swiftVersion(inBuildScript: "\(checkout)/sdk/build.sh")
+        // The releases and tags as GitHub lists them, or from files (a rehearsal's).
+        let releases = try releasesFile.map { try JSONDecoder().decode([GitHub.Release].self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
+            ?? github.releases()
+        let tags = try tagsFile.map { try JSONDecoder().decode([GitHub.Tag].self, from: Data(contentsOf: URL(fileURLWithPath: $0))).map(\.name) }
+            ?? github.tags()
+        print(Draft.version(prefix: tagPrefix, line: line, commit: commit, releases: releases, tags: tags))
     }
 }
