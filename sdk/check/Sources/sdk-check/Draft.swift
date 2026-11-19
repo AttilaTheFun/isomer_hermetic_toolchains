@@ -394,6 +394,12 @@ struct Version: ParsableCommand {
     @Option(help: "The checkout, for sdk/build.sh's SWIFT_VERSION.")
     var checkout: String = "."
 
+    @Option(name: .customLong("releases"), help: "The releases as GitHub's API lists them, from a file, in place of asking (a rehearsal).")
+    var releasesFile: String?
+
+    @Option(name: .customLong("tags"), help: "The tags as GitHub's API lists them, from a file.")
+    var tagsFile: String?
+
     @Option(help: "The tags' prefix: a release is <prefix><line>.N.")
     var tagPrefix: String = "isomer-"
 
@@ -404,6 +410,11 @@ struct Version: ParsableCommand {
         let environment = ProcessInfo.processInfo.environment
         let github = GitHub(api: api, uploads: "", repository: repository, token: environment["GITHUB_TOKEN"] ?? environment["GH_TOKEN"])
         let line = try self.line ?? Draft.swiftVersion(inBuildScript: "\(checkout)/sdk/build.sh")
-        print(Draft.version(prefix: tagPrefix, line: line, commit: commit, releases: try github.releases(), tags: try github.tags()))
+        // The releases and tags as GitHub lists them, or from files (a rehearsal's).
+        let releases = try releasesFile.map { try JSONDecoder().decode([GitHub.Release].self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
+            ?? github.releases()
+        let tags = try tagsFile.map { try JSONDecoder().decode([GitHub.Tag].self, from: Data(contentsOf: URL(fileURLWithPath: $0))).map(\.name) }
+            ?? github.tags()
+        print(Draft.version(prefix: tagPrefix, line: line, commit: commit, releases: releases, tags: tags))
     }
 }
