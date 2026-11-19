@@ -81,7 +81,9 @@ enum ProofWriter {
             let stem = String(name.dropLast(".log".count))
             // Leniently: a job's log may hold bytes that aren't UTF-8.
             let text = String(decoding: try Data(contentsOf: URL(fileURLWithPath: "\(logs)/\(name)")), as: UTF8.self)
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { plain($0) }
+            // At any newline: adb on Android 6 ends its lines "\r\n", one Character
+            // in Swift, which splitting at "\n" leaves joined.
+            let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline }).map { plain($0) }
             var made: [Item] = []
             if stem.hasPrefix("sdk-") {
                 made = sdkItems(bundle: String(stem.dropFirst("sdk-".count)), lines: lines)
