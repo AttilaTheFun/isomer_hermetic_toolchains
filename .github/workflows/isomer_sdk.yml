@@ -1,18 +1,43 @@
 name: Isomer SDK
 # Isomer's Swift SDKs (sdk/build.sh): Android's (aarch64, x86_64 and armv7 in
 # one bundle) and WebAssembly's (wasm32-unknown-wasip1), each plain and -i18n
-# (FoundationInternationalization and the SDK's ICU in Foundation), on each
-# isomer-* branch push and isomer-* tag; kept as artifacts, and attached with their
-# checksums to an isomer-* tag's release, where consumers fetch them by URL
-# (docs/hermetic_toolchains.md in AttilaTheFun/isomer). Actions pinned by
-# commit, the image by digest; only the tag's release job can write.
+# (FoundationInternationalization and the SDK's ICU in Foundation). Each
+# build checks its SDK (the client, and sdk/check's autolink, pairing and
+# undefined) and fails on any of them (sdk/README.md).
+#
+# - each push to an isomer-* branch: the four SDKs built and checked, kept
+#   as artifacts for a day.
+# - by hand (`run: release`, on the release branch, isomer-<Swift
+#   version>), as isomer's release runs are (AttilaTheFun/reviews'
+#   docs/RELEASE_PROCESS.md): the SDKs built and checked, then a consumer
+#   built against them as a consumer fetches them, by URL and sha256 (isomer
+#   main's tests/sdk_consumer and tools/ci/sdk_smoke, the SDKs served from
+#   the job: a draft's assets need a token), plain and -i18n at API 23 and
+#   28, upgraded from the SDKs isomer registers now in one output base, its
+#   x86_64 APK run on an emulator at the cell's API; then a draft release
+#   with the SDKs and their .sha256 files (sdk-check draft: its version from
+#   the repository's releases and tags, its notes the checks that passed,
+#   the checksums and the consumer's lines). The owner publishes it in
+#   Reviews, which makes its tag, isomer-<Swift version>.N. No agent
+#   publishes a release or makes a tag.
+#
+# Actions pinned by commit, the images by digest; only the release job can
+# write.
 on:
   push:
     branches: ['isomer-*']
-    tags: ['isomer-*']
   workflow_dispatch:
+    inputs:
+      run:
+        description: "What to run: build (the SDKs, built and checked), or release on the release branch (built, checked, a consumer built and run against them, and a draft release)"
+        type: choice
+        options: [build, release]
+        default: build
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   sdk:
     strategy:
@@ -32,60 +57,137 @@ jobs:
         with:
           fetch-depth: 0
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - run: sdk/build.sh ${{ matrix.sdk }} --out="$RUNNER_TEMP/sdk"
+      # Its checks' PASS lines kept for the draft's notes.
+      - run: |
+          sdk/build.sh ${{ matrix.sdk }} --out="$RUNNER_TEMP/sdk" 2>&1 | tee "$RUNNER_TEMP/build.log"
+          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/build.log" | sed 's/^/${{ matrix.sdk }}: /' > "$RUNNER_TEMP/results/sdk-${{ matrix.sdk }}.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: isomer-${{ matrix.sdk }}-sdk
           path: ${{ runner.temp }}/sdk/
           compression-level: 0
-  release:
-    # An isomer-* tag's release gets the four SDKs and their checksums; the
-    # only job that writes.
-    if: startsWith(github.ref, 'refs/tags/isomer-')
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: results-sdk-${{ matrix.sdk }}
+          path: ${{ runner.temp }}/results/
+          retention-days: 1
+
+  # A consumer of the SDKs just built, as an app fetches them: isomer main's
+  # tests/sdk_consumer at isomer main, first with the SDKs isomer registers
+  # now (examples/MODULE.bazel's, at API 28), then upgraded in the same
+  # output base to these, served by URL from the job (busybox's httpd: a
+  # draft's assets need a token), at the cell's API (isomer's
+  # docs/hermetic_toolchains.md, "The SDKs' checks").
+  smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.run == 'release' && startsWith(github.ref, 'refs/heads/isomer-')
     needs: sdk
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, i18n]
+        api: [23, 28]
+    runs-on: ubuntu-24.04
+    container:
+      image: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+      volumes: ["/mnt:/mnt"]
+    timeout-minutes: 120
+    env:
+      ISOMER_PLATFORMS: android
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AttilaTheFun/isomer
+          ref: main
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: isomer-*-sdk
           merge-multiple: true
-          path: sdk
-      # A draft of the tag's release if it has none (published by hand), its
-      # notes the lines a consumer's MODULE.bazel registers the SDKs with.
+          path: ${{ runner.temp }}/sdk
+      - name: The job's tools, and the SDKs served
+        run: |
+          tools/ci/job_tools.sh && apt-get install -y -qq busybox > /dev/null
+          busybox httpd -p 127.0.0.1:8000 -h "$RUNNER_TEMP/sdk"
+      - name: The consumer with the SDKs isomer registers now
+        run: |
+          bazel run //tools/ci/sdk_smoke -- cell --isomer "$PWD" --sdk-base-url "$(sed -n 's|^ *url = "\(.*\)/swift-6.4.2-RELEASE_android.*|\1|p' examples/MODULE.bazel | head -1)" --variant ${{ matrix.variant }} --api 28
+          bazel run //tools/ci/sdk_smoke -- build --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer
+      - name: Upgraded to these SDKs, by URL
+        run: |
+          cell="--isomer $PWD --sdk-base-url http://127.0.0.1:8000 --variant ${{ matrix.variant }} --api ${{ matrix.api }}"
+          { bazel run //tools/ci/sdk_smoke -- cell $cell && bazel run //tools/ci/sdk_smoke -- build --startup-arg=--output_base=/mnt/consumer &&
+            bazel run //tools/ci/sdk_smoke -- cell $cell --rules-android 0.7.3 && bazel run //tools/ci/sdk_smoke -- build --no-wasm --out "$RUNNER_TEMP/apks" --startup-arg=--output_base=/mnt/consumer; } | tee "$RUNNER_TEMP/smoke.log"
+          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/smoke.log" | sort -u | sed 's/^/consumer, ${{ matrix.variant }}, API ${{ matrix.api }}: /' > "$RUNNER_TEMP/results/smoke-${{ matrix.variant }}-${{ matrix.api }}.txt"
+          cp tests/sdk_consumer/cell.bzl "$RUNNER_TEMP/apks/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: results-smoke-${{ matrix.variant }}-${{ matrix.api }}
+          path: ${{ runner.temp }}/results/
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-apk-${{ matrix.variant }}-${{ matrix.api }}
+          path: |
+            ${{ runner.temp }}/apks/smoke_x86_64.apk
+            ${{ runner.temp }}/apks/cell.bzl
+          retention-days: 1
+
+  # Each cell's x86_64 APK on an emulator at its API, on GitHub's KVM
+  # (isomer's tools/ci/hosted_android_emulator.sh, the API's AOSP image).
+  smoke-android:
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, i18n]
+        api: [23, 28]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AttilaTheFun/isomer
+          ref: main
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: smoke-apk-${{ matrix.variant }}-${{ matrix.api }}
+          path: ${{ runner.temp }}/apk
+      - name: The checks on Android ${{ matrix.api }}
+        run: |
+          cp "$RUNNER_TEMP/apk/cell.bzl" tests/sdk_consumer/ && tools/ci/hosted_android_emulator.sh "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/serial" "system-images;android-${{ matrix.api }};default;x86_64" < /dev/null > /dev/null
+          bazel run //tools/ci/sdk_smoke -- run-android --adb "$ANDROID_HOME/platform-tools/adb" --serial "$(cat "$RUNNER_TEMP/serial")" --apk "$RUNNER_TEMP/apk/smoke_x86_64.apk" | tee "$RUNNER_TEMP/run.log"
+          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/run.log" | sed 's/^/consumer, ${{ matrix.variant }}: /' > "$RUNNER_TEMP/results/emulator-${{ matrix.variant }}-${{ matrix.api }}.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: results-emulator-${{ matrix.variant }}-${{ matrix.api }}
+          path: ${{ runner.temp }}/results/
+          retention-days: 1
+
+  # The draft release (sdk-check draft, sdk/check/Sources/sdk-check/Draft.swift):
+  # the only job that writes.
+  release:
+    needs: [sdk, smoke, smoke-android]
+    runs-on: ubuntu-24.04-arm
+    container: ghcr.io/attilathefun/visor-agent@sha256:849dcf6aeb16119e3b769b4f0c410b93ac58ed1e3b3ef2801f7534def3fbaaf0
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: isomer-*-sdk
+          merge-multiple: true
+          path: ${{ runner.temp }}/sdk
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/results
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
-          line() { echo "swift.$1(url = \"$base/$2\", sha256 = \"$(cut -d' ' -f1 "sdk/$2.sha256")\")"; }
-          {
-            echo "Swift 6.4.2's Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs'."
-            echo
-            echo "A consumer's MODULE.bazel registers one SDK a platform, in its \`swift\` block. The plain SDKs link no ICU;"
-            echo "an app that formats dates, numbers or lists with Foundation takes the -i18n one, whose Foundation has"
-            echo "FoundationInternationalization and the SDK's ICU."
-            echo
-            echo "Android:"
-            echo
-            echo '```starlark'
-            line android_sdk swift-6.4.2-RELEASE_android.artifactbundle.tar.gz
-            line android_sdk swift-6.4.2-RELEASE_android-i18n.artifactbundle.tar.gz
-            echo '```'
-            echo
-            echo "The web (WebAssembly):"
-            echo
-            echo '```starlark'
-            line wasm_sdk swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz
-            line wasm_sdk swift-6.4.2-RELEASE_wasm-i18n.artifactbundle.tar.gz
-            echo '```'
-          } > notes.md
-          cat notes.md
-          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --draft \
-              --title "$GITHUB_REF_NAME" --notes-file notes.md
-          # A published release's SDKs are never replaced: consumers pin their sha256.
-          [ "$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true ] ||
-            { echo "::error::$GITHUB_REF_NAME is published: its SDKs aren't replaced (consumers pin their sha256)"; exit 1; }
-          gh release upload "$GITHUB_REF_NAME" sdk/* --clobber -R "$GITHUB_REPOSITORY"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          swift run --package-path sdk/check -c release sdk-check draft --assets "$RUNNER_TEMP/sdk" --results "$RUNNER_TEMP/results"
