@@ -23,6 +23,29 @@ name: Isomer SDK
 #
 # Actions pinned by commit, the images by digest; only the release job can
 # write.
+#
+# Bazel's caches, GitHub's (actions/cache), for the release run's smoke
+# jobs, set up by isomer's tools/ci/ci_bazel.sh from the isomer checkout
+# (its downloader.cfg: GitHub's downloads at GitHub and Bazel's mirror,
+# Maven Central's at Central and Google's mirror):
+# - the repository cache (downloads, each checked by its sha256): its
+#   content_addressable files alone (the repository contents cache beside
+#   it is many GB), without the candidate SDKs, which no later run fetches;
+# - sdk_smoke's own build at isomer's root (its disk cache), by isomer's
+#   graph;
+# - the consumer's build with the SDKs isomer registers now (its disk
+#   cache, only that build's), by everything that build is made of but
+#   isomer's sources (content-addressed, they are its actions' inputs):
+#   isomer's graph, the registered SDKs' URLs and sha256s
+#   (examples/MODULE.bazel), the consumer's MODULE.bazel and Package.resolved,
+#   the variant and the image. Restored by that exact key alone, never
+#   saved after the upgrade. The upgraded builds, against the candidate SDKs,
+#   have no disk cache: they are what the run proves (the upgrade in one
+#   output base, as a consumer makes it), so each is built.
+# A key is saved once, by whichever cell gets there first; GitHub's 10 GB a
+# repository holds them: about 4 GB together (the downloads 2.3 GB
+# compressed, each variant's consumer build 0.15 GB, sdk_smoke's 30 MB, the
+# emulator jobs' tool and its downloads about 1 GB).
 on:
   push:
     branches: ['isomer-*']
@@ -125,14 +148,47 @@ jobs:
           pattern: isomer-*-sdk
           merge-multiple: true
           path: ${{ runner.temp }}/sdk
+      # apt from Azure's Ubuntu mirror, as GitHub's own images have it: from
+      # archive.ubuntu.com this step took 9 to 12 minutes of each cell.
       - name: The job's tools, and the SDKs served
         run: |
+          sed -i 's|http://archive.ubuntu.com/|http://azure.archive.ubuntu.com/|g' /etc/apt/sources.list.d/ubuntu.sources
           tools/ci/job_tools.sh && apt-get install -y -qq busybox > /dev/null
           busybox httpd -p 127.0.0.1:8000 -h "$RUNNER_TEMP/sdk"
+      # Bazel's caches (the header): restored after job_tools.sh, which
+      # installs zstd (a cache saved with zstd isn't found without it).
+      - id: repository-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/bazel/repository/content_addressable
+          key: smoke-repository-${{ hashFiles('isomer/MODULE.bazel', 'isomer/examples/MODULE.bazel', 'isomer/*_install.json', 'isomer/tests/sdk_consumer/MODULE.bazel', 'isomer/tests/sdk_consumer/dep/MODULE.bazel', 'isomer/**/Package.resolved') }}
+          restore-keys: smoke-repository-
+      - id: tool-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/bazel/disk
+          key: smoke-tool-noble-23d9b28a-${{ hashFiles('isomer/.bazelversion', 'isomer/MODULE.bazel', 'isomer/**/Package.resolved') }}
+      # The image's digest in the key (as `container:` names it): the host's
+      # clang and libraries are the build's too.
+      - id: previous-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/previous
+          key: smoke-previous-${{ matrix.variant }}-noble-23d9b28a-${{ hashFiles('isomer/.bazelversion', 'isomer/MODULE.bazel', 'isomer/examples/MODULE.bazel', 'isomer/*_install.json', 'isomer/**/Package.resolved', 'isomer/tests/sdk_consumer/**', 'isomer/tests/sdk_consumer/.bazelrc', 'isomer/tests/sdk_consumer/.bazelversion') }}
+      - name: Bazel's settings
+        run: tools/ci/ci_bazel.sh setup /mnt/cache/bazel
+      # The one build with a disk cache of its own (--disk_cache here alone).
       - name: The consumer with the SDKs isomer registers now
         run: |
           { bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell --isomer "$PWD" --sdk-base-url "$(sed -n 's|^ *url = "\(.*\)/swift-6.4.2-RELEASE_android.*|\1|p' examples/MODULE.bazel | head -1)" --variant ${{ matrix.variant }} --api 28 &&
-            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --bazel-arg=--experimental_repository_downloader_retries=3 --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer; } | tee -a "$RUNNER_TEMP/smoke.log"
+            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --bazel-arg=--experimental_repository_downloader_retries=3 --bazel-arg=--disk_cache=/mnt/cache/previous --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer; } | tee -a "$RUNNER_TEMP/smoke.log"
+      # Saved here, before anything of the candidate SDKs is fetched, and only
+      # after that build passed.
+      - if: steps.previous-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/previous
+          key: ${{ steps.previous-cache.outputs.cache-primary-key }}
       - name: Upgraded to these SDKs, by URL
         run: |
           cell="--isomer $PWD --sdk-base-url http://127.0.0.1:8000 --variant ${{ matrix.variant }} --api ${{ matrix.api }}"
@@ -160,6 +216,24 @@ jobs:
           name: logs-smoke-${{ matrix.variant }}-${{ matrix.api }}
           path: out/logs/
           retention-days: 1
+      # sdk_smoke's build and the downloads, kept even when a build failed
+      # (both are right whatever the consumer did). The candidate SDKs out of
+      # the downloads first: no later run fetches these again.
+      - if: ${{ !cancelled() && steps.tool-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/bazel/disk
+          key: ${{ steps.tool-cache.outputs.cache-primary-key }}
+      - name: The downloads, without the candidate SDKs
+        if: ${{ !cancelled() && steps.repository-cache.outputs.cache-hit != 'true' }}
+        run: |
+          for file in "$RUNNER_TEMP"/sdk/*.sha256; do rm -rf "/mnt/cache/bazel/repository/content_addressable/sha256/$(cut -d' ' -f1 "$file")"; done
+          du -sh /mnt/cache/bazel/repository/content_addressable
+      - if: ${{ !cancelled() && steps.repository-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /mnt/cache/bazel/repository/content_addressable
+          key: ${{ steps.repository-cache.outputs.cache-primary-key }}
 
   # Each cell's x86_64 APK on an emulator at its API, on GitHub's KVM
   # (isomer's tools/ci/hosted_android_emulator.sh, the API's AOSP image).
@@ -191,6 +265,20 @@ jobs:
       # package the runner's image hasn't.
       - name: The tool's libcurl
         run: sudo apt-get install -y -qq libcurl4-openssl-dev > /dev/null
+      # sdk_smoke's build (its disk cache) and its downloads, by isomer's
+      # graph and the runner's image (its compilers and libraries are the
+      # build's), set up by isomer's tools/ci/ci_bazel.sh (the header).
+      - id: image
+        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - id: tool-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/sdk-smoke/disk
+            ~/.cache/sdk-smoke/repository/content_addressable
+          key: smoke-android-tool-${{ steps.image.outputs.version }}-${{ hashFiles('isomer/.bazelversion', 'isomer/MODULE.bazel', 'isomer/**/Package.resolved') }}
+      - name: Bazel's settings
+        run: tools/ci/ci_bazel.sh setup "$HOME/.cache/sdk-smoke"
       - name: The emulator at API ${{ matrix.api }}
         run: |
           cp "$GITHUB_WORKSPACE/out/apk/cell.bzl" tests/sdk_consumer/
@@ -210,6 +298,13 @@ jobs:
           name: logs-emulator-${{ matrix.variant }}-${{ matrix.api }}
           path: out/logs/
           retention-days: 1
+      - if: ${{ !cancelled() && steps.tool-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/sdk-smoke/disk
+            ~/.cache/sdk-smoke/repository/content_addressable
+          key: ${{ steps.tool-cache.outputs.cache-primary-key }}
 
   # The draft release (sdk-check draft, sdk/check/Sources/sdk-check/Draft.swift):
   # the only job that writes.
