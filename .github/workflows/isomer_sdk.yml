@@ -126,25 +126,27 @@ jobs:
       - name: The consumer with the SDKs isomer registers now
         run: |
           bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell --isomer "$PWD" --sdk-base-url "$(sed -n 's|^ *url = "\(.*\)/swift-6.4.2-RELEASE_android.*|\1|p' examples/MODULE.bazel | head -1)" --variant ${{ matrix.variant }} --api 28
-          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer
+          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --bazel-arg=--experimental_repository_downloader_retries=3 --no-apks --no-wasm --startup-arg=--output_base=/mnt/consumer
       - name: Upgraded to these SDKs, by URL
         run: |
           cell="--isomer $PWD --sdk-base-url http://127.0.0.1:8000 --variant ${{ matrix.variant }} --api ${{ matrix.api }}"
-          { bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --startup-arg=--output_base=/mnt/consumer &&
-            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell --rules-android 0.7.3 && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ --no-wasm --out "$RUNNER_TEMP/apks" --startup-arg=--output_base=/mnt/consumer; } | tee "$RUNNER_TEMP/smoke.log"
-          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/smoke.log" | sort -u | sed 's/^/consumer, ${{ matrix.variant }}, API ${{ matrix.api }}: /' > "$RUNNER_TEMP/results/smoke-${{ matrix.variant }}-${{ matrix.api }}.txt"
-          cp tests/sdk_consumer/cell.bzl "$RUNNER_TEMP/apks/"
+          retries=--bazel-arg=--experimental_repository_downloader_retries=3
+          { bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ $retries --startup-arg=--output_base=/mnt/consumer &&
+            bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- cell $cell --rules-android 0.7.3 && bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- build --bazel-arg=--symlink_prefix=/ $retries --no-wasm --out "$GITHUB_WORKSPACE/out/apk" --startup-arg=--output_base=/mnt/consumer; } | tee "$RUNNER_TEMP/smoke.log"
+          mkdir -p "$GITHUB_WORKSPACE/out/results" && grep '^PASS' "$RUNNER_TEMP/smoke.log" | sort -u | sed 's/^/consumer, ${{ matrix.variant }}, API ${{ matrix.api }}: /' > "$GITHUB_WORKSPACE/out/results/smoke-${{ matrix.variant }}-${{ matrix.api }}.txt"
+          cp tests/sdk_consumer/cell.bzl "$GITHUB_WORKSPACE/out/apk/"
+      # Uploaded from the workspace (paths relative to it): in a container
+      # job ${{ runner.temp }} names the runner's directory, not the
+      # container's /__w/_temp, and of two such paths only one was found.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: results-smoke-${{ matrix.variant }}-${{ matrix.api }}
-          path: ${{ runner.temp }}/results/
+          path: out/results/
           retention-days: 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: smoke-apk-${{ matrix.variant }}-${{ matrix.api }}
-          path: |
-            ${{ runner.temp }}/apks/smoke_x86_64.apk
-            ${{ runner.temp }}/apks/cell.bzl
+          path: out/apk/
           retention-days: 1
 
   # Each cell's x86_64 APK on an emulator at its API, on GitHub's KVM
@@ -171,16 +173,24 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: smoke-apk-${{ matrix.variant }}-${{ matrix.api }}
-          path: ${{ runner.temp }}/apk
+          path: out/apk
+      # sdk_smoke is built here, on the runner itself (the emulator wants its
+      # KVM): its FoundationNetworking links libcurl, whose development
+      # package the runner's image hasn't.
+      - name: The tool's libcurl
+        run: sudo apt-get install -y -qq libcurl4-openssl-dev > /dev/null
+      - name: The emulator at API ${{ matrix.api }}
+        run: |
+          cp "$GITHUB_WORKSPACE/out/apk/cell.bzl" tests/sdk_consumer/
+          tools/ci/hosted_android_emulator.sh "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/serial" "system-images;android-${{ matrix.api }};default;x86_64" < /dev/null > /dev/null
       - name: The checks on Android ${{ matrix.api }}
         run: |
-          cp "$RUNNER_TEMP/apk/cell.bzl" tests/sdk_consumer/ && tools/ci/hosted_android_emulator.sh "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/serial" "system-images;android-${{ matrix.api }};default;x86_64" < /dev/null > /dev/null
-          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- run-android --adb "$ANDROID_HOME/platform-tools/adb" --serial "$(cat "$RUNNER_TEMP/serial")" --apk "$RUNNER_TEMP/apk/smoke_x86_64.apk" | tee "$RUNNER_TEMP/run.log"
-          mkdir -p "$RUNNER_TEMP/results" && grep '^PASS' "$RUNNER_TEMP/run.log" | sed 's/^/consumer, ${{ matrix.variant }}: /' > "$RUNNER_TEMP/results/emulator-${{ matrix.variant }}-${{ matrix.api }}.txt"
+          bazel run --symlink_prefix=/ //tools/ci/sdk_smoke -- run-android --adb "$ANDROID_HOME/platform-tools/adb" --serial "$(cat "$RUNNER_TEMP/serial")" --apk "$GITHUB_WORKSPACE/out/apk/smoke_x86_64.apk" | tee "$RUNNER_TEMP/run.log"
+          mkdir -p "$GITHUB_WORKSPACE/out/results" && grep '^PASS' "$RUNNER_TEMP/run.log" | sed 's/^/consumer, ${{ matrix.variant }}: /' > "$GITHUB_WORKSPACE/out/results/emulator-${{ matrix.variant }}-${{ matrix.api }}.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: results-emulator-${{ matrix.variant }}-${{ matrix.api }}
-          path: ${{ runner.temp }}/results/
+          path: out/results/
           retention-days: 1
 
   # The draft release (sdk-check draft, sdk/check/Sources/sdk-check/Draft.swift):

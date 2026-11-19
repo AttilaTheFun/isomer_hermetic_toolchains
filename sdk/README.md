@@ -67,7 +67,13 @@ checked out in `isomer/` and every smoke step runs there, so the cell's
 Package.swift has a target at "." that would take what is under Bazel's
 convenience symlinks for resources, and rules_swift_package_manager copies
 that package, the consumer's directory with it, into the consumer's output
-base. Then `sdk-check draft` drafts the release:
+base. The smoke jobs hand on their outputs (the x86_64 APK and its cell,
+the checks' results) from the workspace's `out/`, never `runner.temp`,
+which in a container job names the runner's directory; the emulator job
+builds sdk_smoke on the runner itself, with libcurl's development package
+for its FoundationNetworking. A build is tried twice (sdk_smoke) and its
+downloads retried (Bazel), as Maven Central has answered 404 for artifacts
+it has. Then `sdk-check draft` drafts the release:
 
 - its version, `<Swift version>.N`: the N of a release already drafted on
   this commit (the run repeated: that draft is replaced), else one past the
