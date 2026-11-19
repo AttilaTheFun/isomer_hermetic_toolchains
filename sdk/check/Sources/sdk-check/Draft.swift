@@ -42,8 +42,8 @@ struct Draft: ParsableCommand {
     @Option(help: "The commit the release is of (GITHUB_SHA by default).")
     var commit: String = ProcessInfo.processInfo.environment["GITHUB_SHA"] ?? ""
 
-    @Option(help: "The run that built it (GITHUB_RUN_ID by default).")
-    var run: String = ProcessInfo.processInfo.environment["GITHUB_RUN_ID"] ?? ""
+    @Option(name: .customLong("run"), help: "The run that built it (GITHUB_RUN_ID by default).")
+    var runID: String = ProcessInfo.processInfo.environment["GITHUB_RUN_ID"] ?? ""
 
     @Option(help: "The release line, the Swift release the SDKs are (sdk/build.sh's SWIFT_VERSION by default).")
     var line: String?
@@ -169,7 +169,7 @@ struct Draft: ParsableCommand {
     func notes(version: String, tag: String, built: [SDK], previous: String?) throws -> String {
         let base = "https://github.com/\(repository)/releases/download/\(tag)"
         var lines = [
-            "Isomer's Swift SDKs \(version): Swift \(version.split(separator: ".").prefix(3).joined(separator: "."))'s Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs', proposed for release by run \(run) on \(commit).",
+            "Isomer's Swift SDKs \(version): Swift \(version.split(separator: ".").prefix(3).joined(separator: "."))'s Android and WebAssembly SDKs with Isomer's Foundation in place of corelibs', proposed for release by run \(runID) on \(commit).",
             "",
             "The Android SDKs' minimum is API 23 (aarch64, x86_64 and armv7), the lowest triple of their swift-sdk.json.",
             "",

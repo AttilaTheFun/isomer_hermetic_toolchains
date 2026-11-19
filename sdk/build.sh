@@ -545,9 +545,9 @@ step pack
 # Reproducible: entries sorted, no owners, and every time no later than the
 # last commit to what goes into the bundle (the stock files keep their own,
 # earlier ones): the package, Isomer's sources and this script. A commit to
-# anything else (CI's workflow, the Bazel module's files) leaves the bundle,
+# anything else (CI's workflow, sdk/check, the README) leaves the bundle,
 # and its checksum, as they were.
-EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct -- Package.swift Sources Isomer sdk 2>/dev/null || true)}"
+EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct -- Package.swift Sources Isomer sdk/build.sh 2>/dev/null || true)}"
 [ -n "$EPOCH" ] || { echo "no commit time: set SOURCE_DATE_EPOCH" >&2; exit 1; }
 ARCHIVE="$OUT/$ARCHIVE_NAME"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
