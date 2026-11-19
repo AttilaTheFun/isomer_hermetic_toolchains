@@ -71,7 +71,7 @@ enum ProofWriter {
     /// proof.json, logs/ and proof.zip in `out`, from the logs in `logs`.
     static func write(logs: String, out: String, version: String, repository: String, commit: String, run: String) throws -> [Item] {
         let fileManager = FileManager.default
-        let names = try fileManager.contentsOfDirectory(atPath: logs).filter { $0.hasSuffix(".log") }.sorted()
+        let names = try fileManager.contentsOfDirectory(atPath: logs).filter { $0.hasSuffix(".log") && !$0.hasPrefix(".") }.sorted()
         guard !names.isEmpty else { throw CheckFailure("no logs (sdk-*.log, smoke-*.log, emulator-*.log) in \(logs)") }
         try? fileManager.removeItem(atPath: out)
         try fileManager.createDirectory(atPath: "\(out)/logs", withIntermediateDirectories: true)
