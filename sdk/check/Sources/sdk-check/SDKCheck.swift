@@ -18,8 +18,10 @@ struct SDKCheck: ParsableCommand {
               undefined  every archive's undefined symbols are defined by the
                          SDK's archives or by the platform's libraries at its
                          oldest supported level (Android's API, WASI's libc)
+            And for a release run: draft, the release drafted with the SDKs (its
+            version from the repository's releases and tags).
             """,
-        subcommands: [Autolink.self, Pairing.self, Undefined.self]
+        subcommands: [Autolink.self, Pairing.self, Undefined.self, Draft.self]
     )
 }
 
