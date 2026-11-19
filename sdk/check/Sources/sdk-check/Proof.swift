@@ -129,7 +129,7 @@ enum ProofWriter {
                  "tests": $0.tests, "failures": $0.failures, "log": $0.log] as [String: Any]
             },
         ]
-        let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try data.write(to: URL(fileURLWithPath: "\(out)/proof.json"))
         // proof.zip: proof.json at its top, the logs beside it.
         _ = try runChecked("/usr/bin/env", ["sh", "-c", "cd \"$0\" && zip -q -r -X proof.zip proof.json logs", out])
