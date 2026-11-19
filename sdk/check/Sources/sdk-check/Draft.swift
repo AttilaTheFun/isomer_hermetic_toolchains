@@ -245,7 +245,7 @@ struct Draft: ParsableCommand {
         let names = try FileManager.default.contentsOfDirectory(atPath: results).filter { $0.hasSuffix(".txt") }.sorted()
         return try names.flatMap { name in
             try String(contentsOfFile: "\(results)/\(name)", encoding: .utf8)
-                .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                .split(whereSeparator: { $0.isNewline }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
     }
 }
