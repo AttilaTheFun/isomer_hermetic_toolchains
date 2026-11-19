@@ -4,8 +4,8 @@ swift.org's Swift SDKs for Android and WebAssembly with corelibs Foundation
 taken out and Isomer's Foundation family put in (docs/hermetic_toolchains.md
 in AttilaTheFun/isomer says why and how a consumer registers them).
 `sdk/build.sh <sdk>` builds one in a Linux container; CI
-(.github/workflows/isomer_sdk.yml) builds all four on each push to an
-`isomer-*` branch and drafts a release on an `isomer-*` tag.
+(.github/workflows/isomer_sdk.yml) builds and checks all four on each push
+to an `isomer-*` branch.
 
 | SDK | archive | minimum |
 | --- | --- | --- |
@@ -50,3 +50,28 @@ Every SDK build checks its bundle before it is packed for release
 
 `sdk-check --help` (and each subcommand's) says what it takes; the check
 step shows the arguments for each platform.
+
+## Releases
+
+As isomer's own (AttilaTheFun/reviews' docs/RELEASE_PROCESS.md): a release
+run, isomer_sdk.yml dispatched by hand with `run: release` on the release
+branch (`isomer-<Swift version>`), builds and checks the four SDKs, then
+builds a consumer against them as an app fetches them, by URL and sha256:
+isomer main's tests/sdk_consumer and tools/ci/sdk_smoke, the SDKs served
+from the job (a draft's assets need a token to download), plain and -i18n at
+API 23 and 28, upgraded in one output base from the SDKs isomer registers
+now, each cell's x86_64 APK run on an emulator at its API. Then
+`sdk-check draft` drafts the release:
+
+- its version, `<Swift version>.N`: the N of a release already drafted on
+  this commit (the run repeated: that draft is replaced), else one past the
+  highest `isomer-<Swift version>.N` among the releases and tags;
+- its assets, the four SDKs and their `.sha256` files;
+- its notes, the checks the run passed, each SDK's SHA-256, the lines a
+  consumer's MODULE.bazel registers them with, and the commits since the
+  release before;
+- never over a published release of that tag (consumers pin its sha256).
+
+The owner publishes the draft in Reviews, which makes its tag,
+`isomer-<Swift version>.N`. No agent publishes a release or makes a tag.
+`sdk-check draft --dry-run` reads the releases and says what it would write.
