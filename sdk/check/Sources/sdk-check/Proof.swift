@@ -79,7 +79,8 @@ enum ProofWriter {
         var items: [Item] = []
         for name in names {
             let stem = String(name.dropLast(".log".count))
-            let text = try String(contentsOfFile: "\(logs)/\(name)", encoding: .utf8)
+            // Leniently: a job's log may hold bytes that aren't UTF-8.
+            let text = String(decoding: try Data(contentsOf: URL(fileURLWithPath: "\(logs)/\(name)")), as: UTF8.self)
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { plain($0) }
             var made: [Item] = []
             if stem.hasPrefix("sdk-") {
