@@ -280,7 +280,7 @@ open class URLSessionDownloadTask: URLSessionTask, @unchecked Sendable {
     /// arrives (the transport's `download`, never held whole), named as
     /// Apple's are ("CFNetworkDownload_….tmp").
     override func _run() async {
-        guard let request else {
+        guard let request = originalRequest else {
             _finish(.failed(URLError(.unsupportedURL, url: nil), nil))
             return
         }
