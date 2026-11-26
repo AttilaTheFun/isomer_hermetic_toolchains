@@ -15,7 +15,8 @@ struct CheckFailure: Error, CustomStringConvertible {
 /// Runs `executable` with `arguments`, its output collected through files (a
 /// pipe left unread fills and stops the program; the nm of a large archive
 /// writes megabytes).
-func run(_ executable: String, _ arguments: [String], in directory: URL? = nil) throws -> Output {
+func run(_ executable: String, _ arguments: [String], in directory: URL? = nil,
+         environment: [String: String]? = nil) throws -> Output {
     let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("sdk-check-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: scratch) }
@@ -32,6 +33,7 @@ func run(_ executable: String, _ arguments: [String], in directory: URL? = nil) 
     process.standardError = err
     process.standardInput = FileHandle.nullDevice
     if let directory { process.currentDirectoryURL = directory }
+    if let environment { process.environment = environment }
     try process.run()
     process.waitUntilExit()
     try out.close()
@@ -56,4 +58,23 @@ func makeScratchDirectory(_ name: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("sdk-check-\(name)-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+/// Runs a program whose output is the log's (written as it goes, not
+/// collected): a long build's. Fails naming it when it fails.
+func stream(_ executable: String, _ arguments: [String], in directory: String? = nil,
+            environment: [String: String]? = nil) throws {
+    fflush(stdout)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardInput = FileHandle.nullDevice
+    if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
+    if let environment { process.environment = environment }
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        let command = ([executable] + arguments).joined(separator: " ")
+        throw CheckFailure("\(command) failed (exit \(process.terminationStatus))\(directory.map { " in \($0)" } ?? "")")
+    }
 }

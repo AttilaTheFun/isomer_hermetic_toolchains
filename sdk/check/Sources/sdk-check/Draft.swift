@@ -178,9 +178,11 @@ struct Draft: ParsableCommand {
 
     /// Every archive in `assets` with its checksum file, and nothing else.
     func builtSDKs() throws -> [SDK] {
-        // The plain SDK before its -i18n one.
-        let names = try FileManager.default.contentsOfDirectory(atPath: assets)
-            .sorted { $0.replacingOccurrences(of: "-i18n", with: "~") < $1.replacingOccurrences(of: "-i18n", with: "~") }
+        // The plain SDK before its -i18n one, and wasm's threads SDK last.
+        func key(_ name: String) -> String {
+            name.replacingOccurrences(of: "-i18n", with: "~").replacingOccurrences(of: "-threads", with: "~~")
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: assets).sorted { key($0) < key($1) }
         var sdks: [SDK] = []
         for name in names where name.hasSuffix(".tar.gz") {
             let checksum = "\(assets)/\(name).sha256"
@@ -206,6 +208,8 @@ struct Draft: ParsableCommand {
             "",
             "The Android SDKs' minimum is API 23 (aarch64, x86_64 and armv7), the lowest triple of their swift-sdk.json.",
             "",
+            "The WebAssembly threads SDK (`…_wasm-threads`, plain: no ICU) targets wasm32-unknown-wasip1-threads: Swift's Concurrency on guest threads (swiftlang/swift#92018 on 6.4.2), C++ exceptions (the standard exnref proposal) in its libc++, and shared memory; its bundle also has the plain SDK's wasm32-unknown-wasip1 target. Its programs run on engines with WASI Threads and exception handling (WasmKit 0.5.0).",
+            "",
             "## Checks",
             "",
             "Every SDK, in its build (sdk/build.sh, sdk/check): a client package built and linked against it; `autolink` (every module's importers autolink its library), `pairing` (each module's binary interface and archive from one build) and `undefined` (every archive's symbols resolve at the SDK's minimum) for each architecture.",
@@ -223,13 +227,15 @@ struct Draft: ParsableCommand {
             "",
             "## Registering them",
             "",
-            "A consumer's MODULE.bazel registers one SDK a platform, in its `swift` block. The plain SDKs link no ICU; an app that formats dates, numbers or lists with Foundation takes the -i18n one, whose Foundation has FoundationInternationalization and the SDK's ICU.",
+            "A consumer's MODULE.bazel registers one SDK a platform, in its `swift` block (and wasm's threads SDK beside its plain or -i18n one, `threads = True`). The plain SDKs link no ICU; an app that formats dates, numbers or lists with Foundation takes the -i18n one, whose Foundation has FoundationInternationalization and the SDK's ICU.",
             "",
             "```starlark",
         ]
         for sdk in built {
             let rule = sdk.name.contains("_android") ? "android_sdk" : "wasm_sdk"
-            lines.append("swift.\(rule)(url = \"\(base)/\(sdk.name)\", sha256 = \"\(sdk.sha256)\")")
+            // The threads SDK is a second wasm_sdk tag, beside the plain one.
+            let threads = sdk.name.contains("_wasm-threads") ? "threads = True, " : ""
+            lines.append("swift.\(rule)(\(threads)url = \"\(base)/\(sdk.name)\", sha256 = \"\(sdk.sha256)\")")
         }
         lines.append("```")
         if let previous, let log = try? runChecked("/usr/bin/git", ["-C", checkout, "log", "--first-parent", "--format=- %s", "\(previous)..\(commit)"]),

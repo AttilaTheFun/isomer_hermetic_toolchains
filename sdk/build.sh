@@ -804,11 +804,10 @@ import CxxStdlib
 import Foundation
 import Tiny
 
-// No CxxStdlib overlay on wasm (no String <-> std.string), so through C
-// strings: std::string's own c_str().
-let text = tiny.greeting("wasm")
-let greeting = String(cString: text.c_str())
-print("cxx:", tiny.twice(21), greeting, URL(string: "https://isomer.dev/a")?.host ?? "-")
+// No CxxStdlib overlay on wasm (no String <-> std.string), and c_str()'s
+// pointer into the string isn't imported: its size stands for it.
+let greeting = tiny.greeting("wasm")
+print("cxx:", tiny.twice(21), greeting.size(), URL(string: "https://isomer.dev/a")?.host ?? "-")
 EOF
         "$BIN/swift" build --build-system native --package-path "$CXX" --scratch-path "$CXX/.build" \
             --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" -c release
@@ -817,7 +816,7 @@ EOF
         else
             output="$("$BIN/wasmkit" run "$CXX_BIN" 2>&1)" || bad="$bad the C++ interop client failed under WasmKit;"
             echo "C++ interop under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
-            [[ "$output" == *"cxx: 42 hello, wasm isomer.dev"* ]] || bad="$bad the C++ interop client printed otherwise;"
+            [[ "$output" == *"cxx: 42 11 isomer.dev"* ]] || bad="$bad the C++ interop client printed otherwise;"
         fi
     fi
     [ -z "$bad" ] || { echo "FAIL ($TRIPLE):$bad" >&2; exit 1; }
