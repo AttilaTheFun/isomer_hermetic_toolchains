@@ -25,6 +25,8 @@ open class URLSessionTask: Hashable, @unchecked Sendable {
     /// What a task's load ended with.
     enum _Outcome: Sendable {
         case loaded(Data, URLResponse)
+        /// A download task's body, written to the file as it came.
+        case saved(URL, URLResponse)
         case failed(any Error, URLResponse?)
         /// A WebSocket task's connection closed.
         case ended
@@ -199,7 +201,7 @@ open class URLSessionTask: Hashable, @unchecked Sendable {
             status.state = .completed
             status.work = nil
             switch outcome {
-            case .loaded(_, let response):
+            case .loaded(_, let response), .saved(_, let response):
                 status.response = response
             case .failed(let error, let response):
                 status.error = error
@@ -252,7 +254,7 @@ open class URLSessionDataTask: URLSessionTask, @unchecked Sendable {
         switch outcome {
         case .loaded(let data, let response): completionHandler(data, response, nil)
         case .failed(let error, let response): completionHandler(nil, response, error)
-        case .ended: break
+        case .saved, .ended: break
         }
     }
 }
@@ -274,14 +276,34 @@ open class URLSessionDownloadTask: URLSessionTask, @unchecked Sendable {
         super.init(session: session, identifier: identifier, request: request)
     }
 
-    /// The body written to a new file in the temporary directory, named as
+    /// The body written to a new file in the temporary directory as it
+    /// arrives (the transport's `download`, never held whole), named as
     /// Apple's are ("CFNetworkDownload_….tmp").
+    override func _run() async {
+        guard let request else {
+            _finish(.failed(URLError(.unsupportedURL, url: nil), nil))
+            return
+        }
+        let name = "CFNetworkDownload_" + UUID().uuidString.prefix(8) + ".tmp"
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            let response = try await session._load(request, to: location, task: self)
+            _finish(.saved(location, response))
+        } catch {
+            try? FileManager.default.removeItem(at: location)
+            _finish(.failed(error, nil))
+        }
+    }
+
     override func _deliver(_ outcome: _Outcome) {
         switch outcome {
         case .ended:
             break
         case .failed(let error, let response):
             completionHandler?(nil, response, error)
+        case .saved(let location, let response):
+            completionHandler?(location, response, nil)
+            if !keepsFile { try? FileManager.default.removeItem(at: location) }
         case .loaded(let data, let response):
             let name = "CFNetworkDownload_" + UUID().uuidString.prefix(8) + ".tmp"
             let location = FileManager.default.temporaryDirectory.appendingPathComponent(name)
