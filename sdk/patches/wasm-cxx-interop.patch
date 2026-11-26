@@ -1,0 +1,203 @@
+diff --git a/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk/include/c++/v1/module.modulemap b/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk/include/c++/v1/module.modulemap
+--- a/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk/include/c++/v1/module.modulemap
++++ b/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk/include/c++/v1/module.modulemap
+@@ -1162,6 +1162,7 @@
+   }
+ 
+   module csignal {
++    requires !wasip1 // wasi-libc's <signal.h> is an #error without -D_WASI_EMULATED_SIGNAL
+     header "csignal"
+     export *
+   }
+diff --git a/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift_static/wasi/wasm32/wasi-libc.modulemap b/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift_static/wasi/wasm32/wasi-libc.modulemap
+--- a/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift_static/wasi/wasm32/wasi-libc.modulemap
++++ b/swift-6.4.2-RELEASE_wasm.artifactbundle/swift-6.4.2-RELEASE_wasm/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift_static/wasi/wasm32/wasi-libc.modulemap
+@@ -10,12 +10,16 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
+-module SwiftWASILibc [system] {
++module SwiftWASILibc [system] [no_undeclared_includes] {
+   header "stdc-predef.h"
+   header "features.h"
+ 
+   // C standard library
+-  header "complex.h"
++  module complex {
++    requires !cplusplus
++    header "complex.h"
++    export *
++  }
+   header "ctype.h"
+   header "errno.h"
+   header "fenv.h"
+@@ -68,6 +72,169 @@
+   // WASI specific
+   header "wasi/api.h"
+   export *
++
++  // C++ interop: libc++ wraps the C headers in modules of its own (std_ctype_h,
++  // std_inttypes_h, ...) whose headers #include_next the C library's, which
++  // are this module's, so an #include of one from this module's headers made
++  // a cycle: SwiftWASILibc -> std_inttypes_h -> SwiftWASILibc. With
++  // no_undeclared_includes such an #include skips libc++'s header (its
++  // module isn't `use`d) for the C library's own, as android.modulemap's
++  // _inttypes does (clang's own headers join this module: Swift builds WASI's
++  // with -fbuiltin-headers-in-system-modules). wasi-libc's other headers are
++  // claimed here, textually, so that their #includes are made as this
++  // module's too: clang applies no_undeclared_includes to an #include only
++  // when it knows the including header's module.
++  textual header "__errno.h"
++  textual header "__errno_values.h"
++  textual header "__fd_set.h"
++  textual header "__function___isatty.h"
++  textual header "__functions_malloc.h"
++  textual header "__functions_memcpy.h"
++  textual header "__header_dirent.h"
++  textual header "__header_fcntl.h"
++  textual header "__header_inttypes.h"
++  textual header "__header_netinet_in.h"
++  textual header "__header_poll.h"
++  textual header "__header_stdlib.h"
++  textual header "__header_string.h"
++  textual header "__header_sys_ioctl.h"
++  textual header "__header_sys_resource.h"
++  textual header "__header_sys_socket.h"
++  textual header "__header_sys_stat.h"
++  textual header "__header_time.h"
++  textual header "__header_unistd.h"
++  textual header "__macro_FD_SETSIZE.h"
++  textual header "__macro_PAGESIZE.h"
++  textual header "__mode_t.h"
++  textual header "__seek.h"
++  textual header "__struct_dirent.h"
++  textual header "__struct_in6_addr.h"
++  textual header "__struct_in_addr.h"
++  textual header "__struct_iovec.h"
++  textual header "__struct_msghdr.h"
++  textual header "__struct_pollfd.h"
++  textual header "__struct_rusage.h"
++  textual header "__struct_sockaddr.h"
++  textual header "__struct_sockaddr_in.h"
++  textual header "__struct_sockaddr_in6.h"
++  textual header "__struct_sockaddr_storage.h"
++  textual header "__struct_sockaddr_un.h"
++  textual header "__struct_stat.h"
++  textual header "__struct_timespec.h"
++  textual header "__struct_timeval.h"
++  textual header "__struct_tm.h"
++  textual header "__struct_tms.h"
++  textual header "__typedef_DIR.h"
++  textual header "__typedef_blkcnt_t.h"
++  textual header "__typedef_blksize_t.h"
++  textual header "__typedef_clock_t.h"
++  textual header "__typedef_clockid_t.h"
++  textual header "__typedef_dev_t.h"
++  textual header "__typedef_fd_set.h"
++  textual header "__typedef_gid_t.h"
++  textual header "__typedef_in_addr_t.h"
++  textual header "__typedef_in_port_t.h"
++  textual header "__typedef_ino_t.h"
++  textual header "__typedef_mode_t.h"
++  textual header "__typedef_nfds_t.h"
++  textual header "__typedef_nlink_t.h"
++  textual header "__typedef_off_t.h"
++  textual header "__typedef_sa_family_t.h"
++  textual header "__typedef_sigset_t.h"
++  textual header "__typedef_socklen_t.h"
++  textual header "__typedef_ssize_t.h"
++  textual header "__typedef_suseconds_t.h"
++  textual header "__typedef_time_t.h"
++  textual header "__typedef_uid_t.h"
++  textual header "alloca.h"
++  textual header "ar.h"
++  textual header "assert.h"
++  textual header "byteswap.h"
++  textual header "crypt.h"
++  textual header "dlfcn.h"
++  textual header "endian.h"
++  textual header "err.h"
++  textual header "float.h"
++  textual header "fts.h"
++  textual header "getopt.h"
++  textual header "iso646.h"
++  textual header "limits.h"
++  textual header "malloc.h"
++  textual header "memory.h"
++  textual header "mqueue.h"
++  textual header "setjmp.h"
++  textual header "stdalign.h"
++  textual header "stdbool.h"
++  textual header "stdint.h"
++  textual header "stdio_ext.h"
++  textual header "stdnoreturn.h"
++  textual header "stropts.h"
++  textual header "syscall.h"
++  textual header "tgmath.h"
++  textual header "threads.h"
++  textual header "uchar.h"
++  textual header "values.h"
++  textual header "wchar.h"
++  textual header "wctype.h"
++  textual header "arpa/ftp.h"
++  textual header "arpa/nameser.h"
++  textual header "arpa/nameser_compat.h"
++  textual header "arpa/telnet.h"
++  textual header "arpa/tftp.h"
++  textual header "bits/alltypes.h"
++  textual header "bits/dirent.h"
++  textual header "bits/fcntl.h"
++  textual header "bits/fenv.h"
++  textual header "bits/float.h"
++  textual header "bits/hwcap.h"
++  textual header "bits/io.h"
++  textual header "bits/ioctl.h"
++  textual header "bits/ioctl_fix.h"
++  textual header "bits/ipcstat.h"
++  textual header "bits/limits.h"
++  textual header "bits/mman.h"
++  textual header "bits/poll.h"
++  textual header "bits/posix.h"
++  textual header "bits/reg.h"
++  textual header "bits/resource.h"
++  textual header "bits/setjmp.h"
++  textual header "bits/signal.h"
++  textual header "bits/socket.h"
++  textual header "bits/stat.h"
++  textual header "bits/stdint.h"
++  textual header "netinet/icmp6.h"
++  textual header "netinet/igmp.h"
++  textual header "netinet/in_systm.h"
++  textual header "netinet/ip.h"
++  textual header "netinet/ip6.h"
++  textual header "netinet/ip_icmp.h"
++  textual header "netinet/udp.h"
++  textual header "netpacket/packet.h"
++  textual header "sys/dir.h"
++  textual header "sys/errno.h"
++  textual header "sys/eventfd.h"
++  textual header "sys/fcntl.h"
++  textual header "sys/param.h"
++  textual header "sys/poll.h"
++  textual header "sys/random.h"
++  textual header "sys/reg.h"
++  textual header "sys/signal.h"
++  textual header "sys/statvfs.h"
++  textual header "sys/stropts.h"
++  textual header "sys/syscall.h"
++  textual header "sys/sysinfo.h"
++  textual header "sys/timeb.h"
++  textual header "sys/timex.h"
++  textual header "sys/ttydefaults.h"
++  textual header "wasi/libc-busywait.h"
++  textual header "wasi/libc-environ.h"
++  textual header "wasi/libc-find-relpath.h"
++  textual header "wasi/libc-nocwd.h"
++  textual header "wasi/libc.h"
++  textual header "wasi/version.h"
++  textual header "wasi/wasip1.h"
++  textual header "wasi/wasip2.h"
++  textual header "wasi/wasip3.h"
+ }
+ 
+ module wasi_emulated_mman {
