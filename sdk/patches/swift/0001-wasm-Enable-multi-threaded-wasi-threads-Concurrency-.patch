@@ -1,0 +1,124 @@
+From 1ffe9cc78bc212fcf3225eb2d406e05518eed992 Mon Sep 17 00:00:00 2001
+From: Logan Shire <logan.shire@gmail.com>
+Date: Wed, 25 Nov 2026 19:12:43 -0500
+Subject: [wasm] Enable multi-threaded wasi-threads Concurrency (backport of
+ #92018)
+
+Backport of swiftlang/swift#92018 (03d70fc8b60b95719669a2cbb373f5da6da47cf0,
+merged into main as 8ddc55c72ba0) to swift-6.4.2-RELEASE.
+
+The build-script set SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY=TRUE for every
+wasm stdlib, including wasip1-threads, where it makes the runtime treat
+every thread as the main thread. Set it per product instead, keeping the
+cooperative global executor on wasip1-threads.
+
+The stdlib/CMakeLists.txt hunk and the test and lit.cfg hunks are the
+original's. Its build-script hunks targeted helpers/wasmstdlibhelpers.py and
+emscriptenstdlib.py, which 6.4.2 doesn't have; here they are rewritten for
+6.4.2's wasistdlib.py: the single-threaded define moves from _build_stdlib
+into WASIStdlib.add_extra_cmake_options, and WASIThreadsStdlib's sets it
+FALSE with SWIFT_CONCURRENCY_GLOBAL_EXECUTOR=singlethreaded.
+---
+ stdlib/CMakeLists.txt                         |  3 +-
+ .../wasi_threads_main_thread_isolation.swift  | 31 +++++++++++++++++++
+ test/lit.cfg                                  |  1 +
+ .../products/wasistdlib.py                    |  8 +++--
+ 4 files changed, 40 insertions(+), 3 deletions(-)
+ create mode 100644 test/Concurrency/Runtime/wasi_threads_main_thread_isolation.swift
+
+diff --git a/stdlib/CMakeLists.txt b/stdlib/CMakeLists.txt
+index 4b44f5e..cd9830a 100644
+--- a/stdlib/CMakeLists.txt
++++ b/stdlib/CMakeLists.txt
+@@ -204,7 +204,8 @@ function(swift_create_stdlib_targets name variant define_all_alias)
+ endfunction()
+ 
+ if("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "singlethreaded"
+-   AND NOT SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY)
++   AND NOT SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY
++   AND "${SWIFT_THREADING_PACKAGE}" STREQUAL "none")
+   message(SEND_ERROR "Cannot enable the single-threaded global executor without enabling SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY")
+ endif()
+ 
+diff --git a/test/Concurrency/Runtime/wasi_threads_main_thread_isolation.swift b/test/Concurrency/Runtime/wasi_threads_main_thread_isolation.swift
+new file mode 100644
+index 0000000..8929511
+--- /dev/null
++++ b/test/Concurrency/Runtime/wasi_threads_main_thread_isolation.swift
+@@ -0,0 +1,31 @@
++// RUN: %empty-directory(%t)
++// RUN: %target-build-swift -parse-as-library %s -o %t/a.out
++// RUN: %target-codesign %t/a.out
++// RUN: not --crash %target-run %t/a.out 2>&1 | %FileCheck %s
++
++// REQUIRES: executable_test
++// REQUIRES: concurrency
++// REQUIRES: concurrency_runtime
++// REQUIRES: OS=wasip1
++// REQUIRES: wasi_threads
++
++import WASILibc
++import wasi_pthread
++
++func worker(_: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
++  MainActor.assumeIsolated { print("OK") }
++  return nil
++}
++
++@main struct Main {
++  static func main() {
++    MainActor.assumeIsolated { print("main") }
++    var thread = pthread_t(bitPattern: 0)
++    guard pthread_create(&thread, nil, worker, nil) == 0 else { return }
++    pthread_join(thread!, nil)
++  }
++}
++
++// CHECK: main
++// CHECK: Incorrect actor executor assumption
++// CHECK-NOT: OK
+diff --git a/test/lit.cfg b/test/lit.cfg
+index a9bded5..bd35be3 100644
+--- a/test/lit.cfg
++++ b/test/lit.cfg
+@@ -259,6 +259,7 @@ if kIsWASI:
+   if run_os == 'wasip1-threads':
+       run_os = 'wasip1'
+       run_environment = 'threads'
++      config.available_features.add('wasi_threads')
+ 
+ lto_flags = ""
+ use_just_built_liblto = ""
+diff --git a/utils/swift_build_support/swift_build_support/products/wasistdlib.py b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+index b99b56f..3c4139e 100644
+--- a/utils/swift_build_support/swift_build_support/products/wasistdlib.py
++++ b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+@@ -158,8 +158,6 @@ class WASIStdlib(cmake_product.CMakeProduct):
+         self.cmake_options.define(
+             'SWIFT_STDLIB_INSTALL_PARENT_MODULE_FOR_SHIMS:BOOL', 'FALSE')
+         self.cmake_options.define('SWIFT_RUNTIME_CRASH_REPORTER_CLIENT:BOOL', 'FALSE')
+-        self.cmake_options.define(
+-            'SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY:BOOL', 'TRUE')
+         self.cmake_options.define('SWIFT_ENABLE_DISPATCH:BOOL', 'FALSE')
+         self.cmake_options.define(
+             'SWIFT_STDLIB_SUPPORTS_BACKTRACE_REPORTING:BOOL', 'FALSE')
+@@ -219,6 +217,8 @@ class WASIStdlib(cmake_product.CMakeProduct):
+ 
+     def add_extra_cmake_options(self):
+         self.cmake_options.define('SWIFT_THREADING_PACKAGE:STRING', 'none')
++        self.cmake_options.define(
++            'SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY:BOOL', 'TRUE')
+ 
+     def test(self, host_target):
+         self._test(host_target, 'wasm32-wasip1')
+@@ -309,3 +309,7 @@ class WASIThreadsStdlib(WASIStdlib):
+                                   '-Xcc;-mthread-model;-Xcc;posix;'
+                                   '-Xcc;-pthread;-Xcc;-ftls-model=local-exec')
+         self.cmake_options.define('SWIFT_ENABLE_WASI_THREADS:BOOL', 'TRUE')
++        self.cmake_options.define(
++            'SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY:BOOL', 'FALSE')
++        self.cmake_options.define('SWIFT_CONCURRENCY_GLOBAL_EXECUTOR:STRING',
++                                  'singlethreaded')
+-- 
+2.54.0 (Apple Git-157)
+

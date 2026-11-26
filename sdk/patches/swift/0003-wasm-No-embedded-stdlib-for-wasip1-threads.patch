@@ -1,0 +1,32 @@
+From 5a874ea92bbb826be0c341afe92bd88d8e13b489 Mon Sep 17 00:00:00 2001
+From: Agent <344224964+logan-shire-agent[bot]@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 19:13:41 -0500
+Subject: [wasm] No embedded stdlib for wasip1-threads
+
+WASIThreadsStdlib sets SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB=FALSE (defined
+after _build_stdlib's TRUE, so it wins on CMake's command line). The
+embedded stdlib's tests are skipped for the threads triple and the SDK's
+embedded variant is wasm32-wasip1's only, so building it again for the
+threads triple was time spent for nothing.
+---
+ .../swift_build_support/products/wasistdlib.py                | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/utils/swift_build_support/swift_build_support/products/wasistdlib.py b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+index 3c4139e..318db3e 100644
+--- a/utils/swift_build_support/swift_build_support/products/wasistdlib.py
++++ b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+@@ -309,6 +309,10 @@ class WASIThreadsStdlib(WASIStdlib):
+                                   '-Xcc;-mthread-model;-Xcc;posix;'
+                                   '-Xcc;-pthread;-Xcc;-ftls-model=local-exec')
+         self.cmake_options.define('SWIFT_ENABLE_WASI_THREADS:BOOL', 'TRUE')
++        # No embedded stdlib for the threads triple: its tests are skipped
++        # (see _test) and the SDK has an embedded variant for wasm32-wasip1
++        # only.
++        self.cmake_options.define('SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB:BOOL', 'FALSE')
+         self.cmake_options.define(
+             'SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY:BOOL', 'FALSE')
+         self.cmake_options.define('SWIFT_CONCURRENCY_GLOBAL_EXECUTOR:STRING',
+-- 
+2.54.0 (Apple Git-157)
+

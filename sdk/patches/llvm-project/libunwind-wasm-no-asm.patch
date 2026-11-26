@@ -1,0 +1,46 @@
+libunwind: no assembly on wasm
+
+UnwindRegistersSave.S and UnwindRegistersRestore.S include assembly.h,
+which has no case for WebAssembly ("Unsupported target") when they are
+assembled for wasm. Wrap each file in `#if !defined(__wasm__)`, as llvm
+main's copies of both files are, so they assemble to empty wasm objects
+(wasm unwinding is Unwind-wasm.c's) instead of host objects in a wasm
+libunwind.a.
+
+diff --git a/libunwind/src/UnwindRegistersRestore.S b/libunwind/src/UnwindRegistersRestore.S
+index 1bcd205..fb263c6 100644
+--- a/libunwind/src/UnwindRegistersRestore.S
++++ b/libunwind/src/UnwindRegistersRestore.S
+@@ -6,6 +6,8 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++#if !defined(__wasm__)
++
+ #include "assembly.h"
+ 
+ #define FROM_0_TO_15 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+@@ -1257,3 +1259,4 @@ DEFINE_LIBUNWIND_FUNCTION(_ZN9libunwind19Registers_loongarch6jumptoEv)
+ 
+ NO_EXEC_STACK_DIRECTIVE
+ 
++#endif /* !defined(__wasm__) */
+diff --git a/libunwind/src/UnwindRegistersSave.S b/libunwind/src/UnwindRegistersSave.S
+index 5139a55..67b4109 100644
+--- a/libunwind/src/UnwindRegistersSave.S
++++ b/libunwind/src/UnwindRegistersSave.S
+@@ -6,6 +6,8 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++#if !defined(__wasm__)
++
+ #include "assembly.h"
+ 
+ #define FROM_0_TO_15 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+@@ -1235,3 +1237,5 @@ DEFINE_LIBUNWIND_FUNCTION(__unw_getcontext)
+ #endif /* !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__wasm__) */
+ 
+ NO_EXEC_STACK_DIRECTIVE
++
++#endif /* !defined(__wasm__) */
