@@ -860,7 +860,11 @@ EOF
         DOWNLOAD_BIN="$(find "$DOWNLOAD/.build" -name DownloadClient.wasm -type f -path "*/release/*" -print -quit)"
         if [ -z "$DOWNLOAD_BIN" ]; then bad="$bad the download client did not link;"
         else
-            output="$("$BIN/wasmkit" run "$DOWNLOAD_BIN" 2>&1)" || bad="$bad the download client failed under WasmKit;"
+            # A temporary directory the guest may write, where the download's
+            # file goes (swift-foundation's temporaryDirectory reads TMPDIR).
+            mkdir -p "$DOWNLOAD/tmp"
+            output="$("$BIN/wasmkit" run --dir "$DOWNLOAD/tmp" --env "TMPDIR=$DOWNLOAD/tmp" "$DOWNLOAD_BIN" 2>&1)" \
+                || bad="$bad the download client failed under WasmKit;"
             echo "A download task under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"download: 200 body of /a"* ]] || bad="$bad the download client printed otherwise;"
         fi
