@@ -183,8 +183,12 @@ sockets are what SwiftNIO's Windows event loop needs. A release is
 `wine-<version>-staging-arm64-ubuntu26.04.tar.zst` with its `.sha256`.
 
 A Wine release is proposed by a workflow, never assembled by hand:
-isomer_sdk.yml dispatched with `run: wine` (on any branch: the draft
-targets main's head). What it builds is `sdk/wine/wine.json`: the
+isomer_sdk.yml dispatched with `run: wine`. On any branch it builds,
+checks and proves; only a run on `isomer-6.4.2` (reviewed: it takes pull
+requests alone) drafts, and the draft targets main's head. The branch is
+named exactly, not by its `isomer-` prefix, since a new `isomer-*` branch
+can be made at any commit; the pull request that moves the SDK to its next
+line changes it too. What it builds is `sdk/wine/wine.json`: the
 version, Wine's, Staging's and llvm-mingw's sources by URL and sha256, the
 configure line and the packages. Wine's and Staging's URLs name `{version}`
 (and Wine's `{major}`), so the next version is its `version` and those two
