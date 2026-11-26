@@ -79,7 +79,7 @@ func stream(_ executable: String, _ arguments: [String], in directory: String? =
     }
 }
 
-/// `run` under another name, where a property of the command shadows it.
+/// `run` under another name, for a command, whose own `run()` shadows it.
 enum ProcessRunner {
     static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil) throws -> Output {
         try sdk_check.run(executable, arguments, environment: environment)

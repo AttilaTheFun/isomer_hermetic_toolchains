@@ -4,7 +4,7 @@ swift.org's Swift SDKs for Android and WebAssembly with corelibs Foundation
 taken out and Isomer's Foundation family put in (docs/hermetic_toolchains.md
 in AttilaTheFun/isomer says why and how a consumer registers them).
 `sdk/build.sh <sdk>` builds one in a Linux container; CI
-(.github/workflows/isomer_sdk.yml) builds and checks all four on each push
+(.github/workflows/isomer_sdk.yml) builds and checks all five on each push
 to an `isomer-*` branch.
 
 | SDK | archive | minimum |
@@ -13,6 +13,66 @@ to an `isomer-*` branch.
 | Android, -i18n | `swift-6.4.2-RELEASE_android-i18n.artifactbundle.tar.gz` | API 23 (aarch64, x86_64, armv7) |
 | WebAssembly, plain | `swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz` | wasm32-unknown-wasip1 |
 | WebAssembly, -i18n | `swift-6.4.2-RELEASE_wasm-i18n.artifactbundle.tar.gz` | wasm32-unknown-wasip1 |
+| WebAssembly threads, plain | `swift-6.4.2-RELEASE_wasm-threads.artifactbundle.tar.gz` | wasm32-unknown-wasip1-threads (and wasm32-unknown-wasip1) |
+
+## The threads SDK
+
+`sdk/build.sh wasm-threads` makes a third wasm bundle: the plain wasm SDK's
+`wasm32-unknown-wasip1` target with `wasm32-unknown-wasip1-threads` beside
+it, Isomer's Foundation family built for both. swift.org's 6.4.2 bundle has
+no threads target (6.5's should), so its runtime is built here, by
+`sdk-check build-threads-runtime`, from upstream's sources cloned by tag and
+checked against their commits (swift, llvm-project and
+swift-experimental-string-processing at `swift-6.4.2-RELEASE`, wasi-libc at
+`wasi-sdk-31`) with the patches in `sdk/patches`:
+
+- `swift/0001`: swiftlang/swift#92018, multi-threaded wasi-threads
+  Concurrency (`SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY` off for the threads
+  triple), backported to 6.4.2's build-script;
+- `swift/0002`: the threads sysroot's libunwind, libc++abi and libc++ built
+  with WebAssembly exceptions (the standard exnref proposal: `-fwasm-exceptions
+  -mllvm -wasm-use-legacy-eh=false`), and the assembly compiled for the target;
+- `swift/0003`: no embedded stdlib for the threads triple;
+- `swift/0004`: build-script's `--build-wasi-threads-stdlib-only` (the
+  sysroot and the threads stdlib, not the plain stdlib or the Swift SDK
+  product);
+- `llvm-project/`: llvm/llvm-project#168449 and libunwind's assembly left
+  empty on wasm, which LLVM 21's libunwind needs (0002 applies them too, when
+  they aren't already).
+
+No compiler is built: swift.org's 6.4.2 toolchain is the host compiler, so
+the modules are the compiler's that loads them; it takes a few minutes. Its
+target has its own `swift-sdk.json` and `toolset.json`:
+
+- every compile: `-matomics -mbulk-memory -mthread-model posix -pthread
+  -ftls-model=local-exec` (Swift's through `-Xcc`);
+- C and C++ compiles: `-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false`;
+  Swift compiles: `-Xllvm -wasm-enable-eh -Xllvm -wasm-use-legacy-eh=false`,
+  as SwiftPM hands the C options to swiftc too (`-Xcc`, for the Clang
+  importer), and swift-frontend aborts on `-Xcc -mllvm -Xcc
+  -wasm-use-legacy-eh=false` unless its own LLVM has the option (Swift's
+  frames still don't unwind: a C++ exception that escapes into Swift ends
+  the program);
+- the link: `--import-memory --export-memory --shared-memory
+  --max-memory=1073741824 -lunwind` (swiftc's links also take `-lunwind`
+  from the runtime's static-executable-args.lnk).
+
+SwiftPM compiles a package's C and C++ with the clang first on PATH (the
+toolset names none), so a SwiftPM build for the threads target needs
+swift.org's toolchain's clang (21) there, as an installed toolchain has it:
+`-wasm-use-legacy-eh` is unknown to older ones (Ubuntu's clang 18 in Visor's
+agent image). sdk/build.sh puts the toolchain's `usr/bin` first for the
+threads target's builds.
+
+rules_swift reads a bundle's one `swift-sdk.json` (its threads support,
+`swift.wasm_sdk(threads = True, url = …, sha256 = …)` beside the plain tag,
+reads it and its toolset), so in this bundle the wasip1 target's is
+`wasip1-swift-sdk.json`; SwiftPM takes either by its artifact id,
+`swift-6.4.2-RELEASE_wasm` or `swift-6.4.2-RELEASE_wasm-threads`. It is plain
+only: swift.org's ICU has no atomics, and none is built for the threads
+triple. Its programs need an engine with WASI Threads and exception handling
+(WasmKit 0.5.0's `run --wasi-threads`; the toolchain's own wasmkit, 0.3.1,
+rejects shared memory).
 
 ## The minimum Android API
 
@@ -34,7 +94,14 @@ Every SDK build checks its bundle before it is packed for release
 - **the client**: a package that imports Foundation, FoundationNetworking,
   Combine and CoreGraphics builds and links against the bundle, autolinks
   Isomer's libraries and none of corelibs', and on wasm runs under WasmKit
-  (with swift-testing beside it);
+  (with swift-testing beside it, and a C++ interop client);
+- **the threads target's**, in the threads SDK, under WasmKit 0.5.0 with
+  WASI Threads: the client and the C++ interop client, and `sdk-check
+  threads-clients`: a TaskGroup of 64 tasks on a task executor over four
+  pthreads, with Foundation on each, and C++ throwing and catching on four
+  `std::thread`s, both packages built by SwiftPM with the bundle's toolset;
+  and `sdk-check build-threads-runtime`'s own: every object wasm, the C++
+  runtimes' exception and thread symbols, no legacy EH instruction;
 - **sdk-check** (`sdk/check`, a Swift program the same toolchain builds),
   for each architecture and each Swift module the build made:
   - `autolink`: `import M` autolinks `-lM`, and every library an import
@@ -88,7 +155,7 @@ are built each time. Then `sdk-check draft` drafts the release:
   the highest published `isomer-<Swift version>.N` release or tag: a draft
   is no release, so an unpublished draft of another commit is replaced by
   this one, under its version;
-- its assets, the four SDKs and their `.sha256` files, and the run's proof:
+- its assets, the five SDKs and their `.sha256` files, and the run's proof:
   `proof.zip` (Reviews' format 2, `sdk-check proof`: a `tests` item for each
   SDK's targets, `check-<bundle>-<arch>`, each consumer cell,
   `smoke-<variant>-api<N>`, and each emulator cell,
