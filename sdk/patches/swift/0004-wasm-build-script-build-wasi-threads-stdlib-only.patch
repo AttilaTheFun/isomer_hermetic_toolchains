@@ -1,0 +1,107 @@
+From e2e82a7df593a871b197180f5a6db355b16040da Mon Sep 17 00:00:00 2001
+From: Agent <344224964+logan-shire-agent[bot]@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 20:08:14 -0500
+Subject: [wasm] build-script: --build-wasi-threads-stdlib-only
+
+With --build-wasi-stdlib, builds the WASI sysroot and the
+wasm32-wasip1-threads stdlib alone: WASIStdlib (the wasm32-wasip1 stdlib)
+and WASISwiftSDK (the Swift SDK product, which builds corelibs Foundation,
+XCTest and swift-testing and needs their checkouts) are skipped.
+WASISysroot still builds both triples' sysroots.
+
+For a build that only needs the threads triple's runtime beside an
+existing wasm32-wasip1 SDK (Isomer's threads SDK takes swift.org's
+wasm32-wasip1 bundle as it is).
+---
+ utils/build_swift/build_swift/driver_arguments.py     |  6 ++++++
+ utils/build_swift/tests/expected_options.py           |  3 +++
+ .../swift_build_support/products/wasistdlib.py        | 11 +++++++++--
+ .../swift_build_support/products/wasiswiftsdk.py      |  3 ++-
+ 4 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/utils/build_swift/build_swift/driver_arguments.py b/utils/build_swift/build_swift/driver_arguments.py
+index 51d1d6a..cca6a89 100644
+--- a/utils/build_swift/build_swift/driver_arguments.py
++++ b/utils/build_swift/build_swift/driver_arguments.py
+@@ -859,6 +859,12 @@ def create_argument_parser():
+     option(['--build-wasi-stdlib'], toggle_true('build_wasistdlib'),
+            help='build the stdlib for WASI target into a'
+                 'separate build directory ')
++    option(['--build-wasi-threads-stdlib-only'],
++           toggle_true('build_wasi_threads_stdlib_only'),
++           help='with --build-wasi-stdlib, build the WASI sysroot and the '
++                'wasm32-wasip1-threads stdlib alone: not the wasm32-wasip1 '
++                'stdlib nor the Swift SDK (corelibs Foundation, XCTest, '
++                'swift-testing)')
+     option(['--wasmkit'], toggle_true('build_wasmkit'),
+            help='build WasmKit')
+     option(['--install-wasmkit'], toggle_true('install_wasmkit'),
+diff --git a/utils/build_swift/tests/expected_options.py b/utils/build_swift/tests/expected_options.py
+index e811119..5e73f47 100644
+--- a/utils/build_swift/tests/expected_options.py
++++ b/utils/build_swift/tests/expected_options.py
+@@ -141,6 +141,7 @@ EXPECTED_DEFAULTS = {
+     'build_xros_simulator': False,
+     'build_xctest': False,
+     'build_wasistdlib': False,
++    'build_wasi_threads_stdlib_only': False,
+     'build_wasmkit': False,
+     'cmake_c_launcher': None,
+     'cmake_cxx_launcher': None,
+@@ -608,6 +609,8 @@ EXPECTED_OPTIONS = [
+     SetTrueOption('--swiftdocc', dest='build_swiftdocc'),
+     SetTrueOption('--build-minimal-stdlib', dest='build_minimalstdlib'),
+     SetTrueOption('--build-wasi-stdlib', dest='build_wasistdlib'),
++    SetTrueOption('--build-wasi-threads-stdlib-only',
++                  dest='build_wasi_threads_stdlib_only'),
+     SetTrueOption('--wasmkit', dest='build_wasmkit'),
+     SetTrueOption('--build-stdlib-docs'),
+     SetTrueOption('--preview-stdlib-docs'),
+diff --git a/utils/swift_build_support/swift_build_support/products/wasistdlib.py b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+index 318db3e..8864fec 100644
+--- a/utils/swift_build_support/swift_build_support/products/wasistdlib.py
++++ b/utils/swift_build_support/swift_build_support/products/wasistdlib.py
+@@ -35,10 +35,11 @@ class WASIStdlib(cmake_product.CMakeProduct):
+         return False
+ 
+     def should_build(self, host_target):
+-        return self.args.build_wasistdlib
++        return self.args.build_wasistdlib and \
++            not self.args.build_wasi_threads_stdlib_only
+ 
+     def should_test(self, host_target):
+-        return self.args.test_wasistdlib
++        return self.should_build(host_target) and self.args.test_wasistdlib
+ 
+     def build(self, host_target):
+         self._build(host_target, 'wasm32-wasip1', 'wasip1-wasm32')
+@@ -289,6 +290,12 @@ class WASIStdlib(cmake_product.CMakeProduct):
+ 
+ 
+ class WASIThreadsStdlib(WASIStdlib):
++    def should_build(self, host_target):
++        return self.args.build_wasistdlib
++
++    def should_test(self, host_target):
++        return self.should_build(host_target) and self.args.test_wasistdlib
++
+     def build(self, host_target):
+         self._build(host_target, 'wasm32-wasip1-threads', 'wasip1-threads-wasm32')
+ 
+diff --git a/utils/swift_build_support/swift_build_support/products/wasiswiftsdk.py b/utils/swift_build_support/swift_build_support/products/wasiswiftsdk.py
+index 316b3e5..1d5a251 100644
+--- a/utils/swift_build_support/swift_build_support/products/wasiswiftsdk.py
++++ b/utils/swift_build_support/swift_build_support/products/wasiswiftsdk.py
+@@ -33,7 +33,8 @@ class WASISwiftSDK(product.Product):
+         return False
+ 
+     def should_build(self, host_target):
+-        return self.args.build_wasistdlib
++        return self.args.build_wasistdlib and \
++            not self.args.build_wasi_threads_stdlib_only
+ 
+     def should_test(self, host_target):
+         return False
+-- 
+2.54.0 (Apple Git-157)
+
