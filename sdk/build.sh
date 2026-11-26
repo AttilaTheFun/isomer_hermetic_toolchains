@@ -419,6 +419,26 @@ for arch in "${ARCHES[@]}"; do
     rm -rf "$STATIC/CoreFoundation" "$STATIC/_FoundationCShims"
     echo "  out: ${CORELIBS_MODULES[*]} (.swiftmodule), CoreFoundation/ and _FoundationCShims/ (clang modules)"
 done
+# Swift's C++ interop on wasm, which the stock bundle can't do:
+# - its wasi-libc module map is one module, so under C++ an <inttypes.h> it
+#   includes resolves to libc++'s wrapper, which includes back into it ("cyclic
+#   dependency in module 'SwiftWASILibc'"). The patch makes it
+#   [no_undeclared_includes], claims wasi-libc's unlisted headers as textual
+#   ones of it, keeps <complex.h> (whose `complex` macro breaks libc++'s
+#   <complex>) to C, and keeps libc++'s csignal off WASI, where <signal.h> is
+#   an #error without -D_WASI_EMULATED_SIGNAL;
+# - libswiftCxx.a is only beside the dynamic resources, not in swift_static,
+#   where swift-sdk.json points (-lswiftCxx not found).
+if [ "$PLATFORM" = wasi ]; then
+    patch -d "$PRUNED" -p1 --forward --no-backup-if-mismatch < "$REPO/sdk/patches/wasm-cxx-interop.patch"
+    for arch in "${ARCHES[@]}"; do
+        SWIFT_LIB="$PRUNED/$BUNDLE/$(static_rel_of "$arch")"
+        DYNAMIC="${SWIFT_LIB%/swift_static}/swift/$PLATFORM"
+        [ -f "$DYNAMIC/libswiftCxx.a" ] || { echo "the stock SDK has no libswiftCxx.a in $DYNAMIC" >&2; exit 1; }
+        cp "$DYNAMIC/libswiftCxx.a" "$SWIFT_LIB/$PLATFORM/"
+        echo "  in: libswiftCxx.a and the C++ interop module maps ($arch)"
+    done
+fi
 
 # --- build, assemble ------------------------------------------------------------
 
@@ -739,6 +759,64 @@ EOF
             output="$("$BIN/wasmkit" run "$RUNNER" 2>&1)" || bad="$bad swift-testing's tests failed under WasmKit;"
             echo "swift-testing under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"with 2 tests"*" passed"* ]] || bad="$bad swift-testing didn't find and pass both tests;"
+        fi
+        # Swift's C++ interop: a C++ target whose header takes the C
+        # library through libc++ (<inttypes.h>, <string>), imported with
+        # the C++ standard library and Foundation, and run. (wasm has no
+        # CxxStdlib Swift overlay: `std` is the clang module alone.)
+        CXX="$WORK/cxx-client"
+        rm -rf "$CXX"; mkdir -p "$CXX/Sources/Tiny/include" "$CXX/Sources/CxxClient"
+        cat > "$CXX/Package.swift" <<'EOF'
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "CxxClient",
+    targets: [
+        .target(name: "Tiny"),
+        .executableTarget(
+            name: "CxxClient",
+            dependencies: ["Tiny"],
+            swiftSettings: [.swiftLanguageMode(.v5), .interoperabilityMode(.Cxx)],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"])]
+        ),
+    ],
+    cxxLanguageStandard: .cxx17
+)
+EOF
+        cat > "$CXX/Sources/Tiny/include/Tiny.h" <<'EOF'
+#pragma once
+#include <inttypes.h>
+#include <string>
+
+namespace tiny {
+inline int64_t twice(int64_t x) { return 2 * x; }
+std::string greeting(const char *name);
+}
+EOF
+        cat > "$CXX/Sources/Tiny/Tiny.cpp" <<'EOF'
+#include "Tiny.h"
+
+std::string tiny::greeting(const char *name) { return std::string("hello, ") + name; }
+EOF
+        cat > "$CXX/Sources/CxxClient/main.swift" <<'EOF'
+import CxxStdlib
+import Foundation
+import Tiny
+
+// No CxxStdlib overlay on wasm (no String <-> std.string), and c_str()'s
+// pointer into the string isn't imported: its size stands for it.
+let greeting = tiny.greeting("wasm")
+print("cxx:", tiny.twice(21), greeting.size(), URL(string: "https://isomer.dev/a")?.host ?? "-")
+EOF
+        "$BIN/swift" build --build-system native --package-path "$CXX" --scratch-path "$CXX/.build" \
+            --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" -c release
+        CXX_BIN="$(find "$CXX/.build" -name CxxClient.wasm -type f -path "*/release/*" -print -quit)"
+        if [ -z "$CXX_BIN" ]; then bad="$bad the C++ interop client did not link;"
+        else
+            output="$("$BIN/wasmkit" run "$CXX_BIN" 2>&1)" || bad="$bad the C++ interop client failed under WasmKit;"
+            echo "C++ interop under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
+            [[ "$output" == *"cxx: 42 11 isomer.dev"* ]] || bad="$bad the C++ interop client printed otherwise;"
         fi
     fi
     [ -z "$bad" ] || { echo "FAIL ($TRIPLE):$bad" >&2; exit 1; }
