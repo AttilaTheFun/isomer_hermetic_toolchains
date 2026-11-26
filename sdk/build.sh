@@ -854,16 +854,18 @@ IsomerNetwork.http = Answering()
 let (file, response) = try await URLSession.shared.download(from: URL(string: "https://isomer.dev/a")!)
 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
 print("download:", status, try String(contentsOf: file, encoding: .utf8))
+try FileManager.default.removeItem(at: file)
 EOF
         "$BIN/swift" build --build-system native --package-path "$DOWNLOAD" --scratch-path "$DOWNLOAD/.build" \
             --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" -c release
         DOWNLOAD_BIN="$(find "$DOWNLOAD/.build" -name DownloadClient.wasm -type f -path "*/release/*" -print -quit)"
         if [ -z "$DOWNLOAD_BIN" ]; then bad="$bad the download client did not link;"
         else
-            # A temporary directory the guest may write, where the download's
-            # file goes (swift-foundation's temporaryDirectory reads TMPDIR).
-            mkdir -p "$DOWNLOAD/tmp"
-            output="$("$BIN/wasmkit" run --dir "$DOWNLOAD/tmp" --env "TMPDIR=$DOWNLOAD/tmp" "$DOWNLOAD_BIN" 2>&1)" \
+            # The guest's /tmp, where the download's file goes (swift-foundation's
+            # temporary directory on WASI). WasmKit's CLI grants a directory
+            # at its own path only, so it is the job's /tmp; the client
+            # removes its file.
+            output="$("$BIN/wasmkit" run --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
                 || bad="$bad the download client failed under WasmKit;"
             echo "A download task under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"download: 200 body of /a"* ]] || bad="$bad the download client printed otherwise;"
