@@ -1,0 +1,17 @@
+{
+  "version": "11.21",
+  "sources": [
+    {"name": "wine", "url": "https://dl.winehq.org/wine/source/{major}.x/wine-{version}.tar.xz", "sha256": "5a40f593432d81fd3a1646db503f21ce42b8894d6d80c34c3a48b886edc54e3d"},
+    {"name": "staging", "url": "https://github.com/wine-staging/wine-staging/archive/refs/tags/v{version}.tar.gz", "sha256": "a6174c005f549717f5329a952dcf2de0948b5faec310c2416d3cb7fad56f1645"},
+    {"name": "llvm-mingw", "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-ubuntu-22.04-aarch64.tar.xz", "sha256": "595e95bdffabfc62559fe26e30bdfbccf277cbaed4902793555015ee47306b94"}
+  ],
+  "platform": "arm64-ubuntu26.04",
+  "configure": ["--prefix=/opt/wine", "--enable-archs=aarch64", "--with-mingw=clang", "--without-oss", "--without-cups"],
+  "buildPackages": ["build-essential", "flex", "bison", "python3", "perl", "autoconf", "automake", "gawk", "git", "patch", "curl", "xz-utils", "ca-certificates", "zstd",
+    "pkg-config", "libx11-dev", "libxext-dev", "libxrender-dev", "libxrandr-dev", "libxi-dev", "libxcursor-dev", "libxcomposite-dev", "libxfixes-dev",
+    "libxinerama-dev", "libfreetype-dev", "libfontconfig-dev", "libgl-dev", "libegl-dev", "libvulkan-dev", "libgnutls28-dev", "libdbus-1-dev"],
+  "runtimePackages": ["libx11-6", "libxext6", "libxrender1", "libxrandr2", "libxi6", "libxcursor1", "libxcomposite1", "libxfixes3",
+    "libxinerama1", "libfreetype6", "libfontconfig1", "libgl1", "libegl1", "libvulkan1", "libgnutls30t64", "libdbus-1-3",
+    "xvfb", "xauth", "x11-utils", "imagemagick", "fonts-dejavu-core", "ca-certificates", "curl", "zstd"],
+  "checkPackages": ["file", "xz-utils", "zip"]
+}

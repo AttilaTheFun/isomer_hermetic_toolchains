@@ -26,9 +26,15 @@ struct SDKCheck: ParsableCommand {
             And for a release run: version, the version its draft will be; proof,
             its proof.zip (Reviews' format 2); and draft, the release drafted with
             the SDKs and the proof.
+            And for a Wine release (isomer_sdk.yml's `run: wine`, sdk/wine/wine.json):
+            wine-build, Wine Staging for arm64 built and packed as
+            wine-<version>-staging-<platform>.tar.zst; wine-check, the archive
+            unpacked and run (wineboot, cmd, an arm64 hello world, Notepad's
+            window); wine-proof, its proof.zip; wine-draft, the draft on main.
             """,
         subcommands: [Autolink.self, Pairing.self, Undefined.self, BuildThreadsRuntime.self, ThreadsClients.self,
-                      Version.self, Proof.self, Draft.self]
+                      Version.self, Proof.self, Draft.self,
+                      WineBuild.self, WineCheck.self, WineProof.self, WineDraft.self]
     )
 }
 
