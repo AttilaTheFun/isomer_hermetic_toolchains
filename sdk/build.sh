@@ -1067,7 +1067,7 @@ EOF
             # temporary directory on WASI). WasmKit's CLI grants a directory
             # at its own path only, so it is the job's /tmp; the client
             # removes its file.
-            output="$("$BIN/wasmkit" run --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
+            output="$("${RUN_WASM[@]}" --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
                 || bad="$bad the download client failed under WasmKit;"
             echo "A download task under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"download: 200 body of /a"* ]] || bad="$bad the download client printed otherwise;"
