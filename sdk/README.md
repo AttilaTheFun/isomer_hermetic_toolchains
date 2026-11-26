@@ -170,3 +170,66 @@ are built each time. Then `sdk-check draft` drafts the release:
 The owner publishes the draft in Reviews, which makes its tag,
 `isomer-<Swift version>.N`. No agent publishes a release or makes a tag.
 `sdk-check draft --dry-run` reads the releases and says what it would write.
+
+## Wine
+
+The repository also releases Wine Staging for arm64 Linux, what Nimbus'
+`nimbus-base` image's windows layer unpacks as `/opt/wine`
+(AttilaTheFun/nimbus's tools/images/nimbus-base/windows.Containerfile, by
+URL and sha256) to run Isomer's arm64 Windows apps and tests under Wine in
+Linux containers. Nobody ships Wine for arm64 Linux, and Staging's AF_UNIX
+sockets are what SwiftNIO's Windows event loop needs. A release is
+`wine-<version>-staging`, its asset
+`wine-<version>-staging-arm64-ubuntu26.04.tar.zst` with its `.sha256`.
+
+A Wine release is proposed by a workflow, never assembled by hand:
+isomer_sdk.yml dispatched with `run: wine` (on any branch: the draft
+targets main's head). What it builds is `sdk/wine/wine.json`: the
+version, Wine's, Staging's and llvm-mingw's sources by URL and sha256, the
+configure line and the packages. Wine's and Staging's URLs name `{version}`
+(and Wine's `{major}`), so the next version is its `version` and those two
+sha256s.
+The `wine` job runs in Ubuntu 26.04 (by digest; its toolchain is the
+build's) on GitHub's arm64 runner, with sdk-check built by swift.org's
+toolchain for 26.04 in `/opt/swift`, off Wine's PATH:
+
+- `sdk-check wine-build --apt`: the recipe's build packages, the sources
+  fetched and checked by sha256, Staging's every patch
+  (`patchinstall.py --all --backend=patch`, checked for `afunix.h`),
+  `./configure` with the recipe's line and llvm-mingw for the arm64 PE side,
+  `make`, `make install` into a directory of its own, then `opt/wine`
+  packed (names sorted, owned by root, zstd -19) with
+  `share/doc/wine/BUILD-INFO` (the sources, the configure line, the
+  machine and the run) and Wine's LICENSE, COPYING.LIB and AUTHORS;
+- `sdk-check wine-check --apt`: the archive unpacked at `/opt`, as the
+  windows layer does, then each check run and logged:
+  - `archive-sha256`: the archive's SHA-256 is its `.sha256`'s;
+  - `version`: `wine --version` is `wine-<version> (Staging)`;
+  - `wineboot`: `wineboot -i` makes a prefix under Xvfb (1280×800×24);
+  - `cmd-echo`: `wine cmd /c echo ok` says `ok`;
+  - `hello-arm64`: a hello world built with llvm-mingw is an ARM64 PE
+    and, under Wine, finds itself on arm64 (processor architecture 12);
+  - `notepad`: Notepad's window shot cropped to it (window-shot's crop,
+    in Swift), the caret's blink off (`CursorBlinkRate` -1), and the same
+    pixels again three seconds later;
+- `sdk-check wine-proof`: `proof.zip` (Reviews' format 2): a `tests` item
+  each, `wine/archive-sha256`, `wine/version`, `wine/wineboot`,
+  `wine/cmd-echo` and `wine/hello-arm64`, with its log, and a `screen`
+  item, `wine/notepad`; the ids are wine-11.21-staging's, so releases
+  compare item by item. Its version is the tag, its commit main's head.
+
+Then `wine-draft` (the only Wine job that writes) compares the proof with
+the last published `wine-*` release's (build_tools' `proof-diff`,
+`PROOF_TAG_PREFIX=wine-`) and runs `sdk-check wine-draft`: a draft tagged
+`wine-<version>-staging` (Shireworks lists a draft only if its target is
+on the branch its tag implies, and a suffixed tag implies main), targeting
+the proof's commit, checked to be on main, with the archive, its `.sha256`,
+`proof.zip` and `proof-diff.json`, and notes giving the sources and their
+sha256s, the configure line, the archive's sha256, the proof's items and
+the windows layer's two lines. A draft of the tag already there is updated
+(every PATCH names `tag_name`: one without it reset a draft's tag to
+`untagged-…`) and its assets replaced, never a second made; a published
+release of the tag is never touched. `wine-draft --dry-run` reads GitHub
+and says what it would do. New Container Helper checks the draft before
+the owner publishes it in Reviews, which makes its tag; then nimbus'
+windows.Containerfile takes the new URL and sha256.
