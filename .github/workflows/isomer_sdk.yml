@@ -1,11 +1,14 @@
 name: Isomer SDK
 # Isomer's Swift SDKs (sdk/build.sh): Android's (aarch64, x86_64 and armv7 in
 # one bundle) and WebAssembly's (wasm32-unknown-wasip1), each plain and -i18n
-# (FoundationInternationalization and the SDK's ICU in Foundation). Each
+# (FoundationInternationalization and the SDK's ICU in Foundation), and
+# WebAssembly's threads SDK (wasm-threads, plain: wasm32-unknown-wasip1-threads
+# beside wasm32-unknown-wasip1, its runtime built in the job from upstream's
+# sources and sdk/patches by sdk-check build-threads-runtime). Each
 # build checks its SDK (the client, and sdk/check's autolink, pairing and
 # undefined) and fails on any of them (sdk/README.md).
 #
-# - each push to an isomer-* branch: the four SDKs built and checked, kept
+# - each push to an isomer-* branch: the five SDKs built and checked, kept
 #   as artifacts for a day.
 # - by hand (`run: release`, on the release branch, isomer-<Swift
 #   version>), as isomer's release runs are (AttilaTheFun/reviews'
@@ -66,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sdk: [android, android-i18n, wasm, wasm-i18n]
+        sdk: [android, android-i18n, wasm, wasm-i18n, wasm-threads]
     runs-on: ubuntu-24.04-arm
     # The image the builds were checked in (Swift's libraries, unzip, git):
     # ghcr.io/attilathefun/visor-agent:0.41.2.
@@ -80,7 +83,9 @@ jobs:
         with:
           fetch-depth: 0
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # Its checks' PASS lines kept for the draft's notes.
+      # Its checks' PASS lines kept for the draft's notes. (wasm-threads
+      # installs cmake and ninja with apt when the image hasn't them, for its
+      # runtime's build: the job runs as root.)
       - run: |
           sdk/build.sh ${{ matrix.sdk }} --out="$RUNNER_TEMP/sdk" 2>&1 | tee "$RUNNER_TEMP/build.log"
           mkdir -p out/results out/logs && grep '^PASS' "$RUNNER_TEMP/build.log" | sed 's/^/${{ matrix.sdk }}: /' > "out/results/sdk-${{ matrix.sdk }}.txt"
