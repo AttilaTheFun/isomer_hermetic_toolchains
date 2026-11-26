@@ -152,9 +152,7 @@ enum ProofWriter {
             byTriple[triple, default: []].append(line)
         }
         return order.map { triple in
-            // The architecture, and -threads for wasm's threads triple, which
-            // its bundle checks beside wasm32-unknown-wasip1.
-            let arch = String(triple.prefix { $0 != "-" }) + (triple.hasSuffix("-threads") ? "-threads" : "")
+            let arch = String(triple.prefix { $0 != "-" })
             return checksItem(id: "check-\(bundle)-\(arch)",
                               title: "The \(bundle) SDK for \(triple): its client, undefined, autolink and pairing",
                               lines: byTriple[triple] ?? [])
