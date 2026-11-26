@@ -23,6 +23,15 @@ name: Isomer SDK
 #   the checksums and the consumer's lines). The owner publishes it in
 #   Reviews, which makes its tag, isomer-<Swift version>.N. No agent
 #   publishes a release or makes a tag.
+# - by hand (`run: wine`, on any branch: its draft targets main's head), a
+#   Wine release (sdk/README.md, "Wine"), never assembled by hand: Wine
+#   Staging for arm64 built from sdk/wine/wine.json in Ubuntu 26.04 (whose
+#   toolchain the build needs), the archive unpacked and checked in the same
+#   container, its proof made (sdk-check wine-build, wine-check, wine-proof),
+#   then compared with the last published wine-* release's (build_tools'
+#   proof-diff) and drafted as wine-<version>-staging on main (sdk-check
+#   wine-draft). New Container Helper checks the draft; the owner publishes
+#   it in Reviews.
 #
 # Actions pinned by commit, the images by digest; only the release job can
 # write.
@@ -55,9 +64,9 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "What to run: build (the SDKs, built and checked), or release on the release branch (built, checked, a consumer built and run against them, and a draft release)"
+        description: "What to run: build (the SDKs, built and checked), release on the release branch (built, checked, a consumer built and run against them, and a draft release), or wine (Wine Staging for arm64 built, checked and drafted as wine-<version>-staging on main)"
         type: choice
-        options: [build, release]
+        options: [build, release, wine]
         default: build
 permissions:
   contents: read
@@ -66,6 +75,8 @@ defaults:
     shell: bash
 jobs:
   sdk:
+    # Not for a Wine release (`run: wine`), which builds no SDK.
+    if: github.event_name == 'push' || inputs.run != 'wine'
     strategy:
       fail-fast: false
       matrix:
@@ -346,7 +357,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: AttilaTheFun/build_tools
-          ref: v0.2.0
+          ref: 3ce2a6b10df8e1fa0f41cc44378d67b8b5b5b6e4 # v0.2.0
           path: out/build_tools
       # The draft's version, its proof (sdk-check proof), the proof's
       # comparison with the release before (proof-diff, PROOF_TAG_PREFIX
@@ -361,3 +372,99 @@ jobs:
           sdk/check/.build/release/sdk-check proof --logs out/logs --out out/proof --version "$version"
           out/build_tools/.build/release/proof-diff make out/proof/proof.zip
           sdk/check/.build/release/sdk-check draft --assets out/sdk --results out/results --proof out/proof
+
+  # A Wine release (sdk/README.md, "Wine"; sdk/wine/wine.json): Wine Staging
+  # for arm64 built, unpacked and checked, and its proof made, in Ubuntu
+  # 26.04 (the image by digest), whose toolchain the build needs: about an
+  # hour of make on 8 CPUs, so up to two on the runner's 4. sdk-check is
+  # built by swift.org's toolchain for 26.04 (by sha256) in /opt/swift, off
+  # Wine's PATH, with the recipe's development packages and only the
+  # toolchain's runtime libraries besides, so Wine's configure finds what it
+  # found by hand. Reads alone: the draft is wine-draft's.
+  wine:
+    if: github.event_name == 'workflow_dispatch' && inputs.run == 'wine'
+    runs-on: ubuntu-24.04-arm
+    container: docker.io/library/ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
+    timeout-minutes: 240
+    env:
+      SWIFT_URL: https://download.swift.org/swift-6.4.2-release/ubuntu2604-aarch64/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE-ubuntu26.04-aarch64.tar.gz
+      SWIFT_SHA256: 54b2f791c815f4b8fe9371e85969a14269efe0dddb30a350773781fa8ebb220c
+    steps:
+      - name: git, and Swift for sdk-check
+        run: |
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git build-essential libncurses6 libsqlite3-0 libxml2-16 libcurl4t64 > /dev/null
+          curl -fsSLo /tmp/swift.tar.gz "$SWIFT_URL" && echo "$SWIFT_SHA256  /tmp/swift.tar.gz" | sha256sum -c -
+          mkdir -p /opt/swift && tar -xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1 && rm /tmp/swift.tar.gz
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: /opt/swift/usr/bin/swift build --package-path sdk/check -c release
+      # The sources by sha256, Staging's patches, configure, make and make
+      # install; the archive and its .sha256 in out/wine, each step's log in
+      # out/logs/build.
+      - name: Wine, built
+        run: sdk/check/.build/release/sdk-check wine-build --apt --out out/wine --logs out/logs/build
+      # The archive unpacked at /opt (as the windows layer does), then its
+      # sha256, wine --version, wineboot -i under Xvfb, cmd /c echo ok, an
+      # arm64 hello world, Notepad's window.
+      - name: Wine, checked
+        run: sdk/check/.build/release/sdk-check wine-check --apt --archive out/wine/wine-*.tar.zst --out out/logs/check
+      # Its commit main's head, which the draft targets.
+      - name: The proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sdk/check/.build/release/sdk-check wine-proof --checks out/logs/check --out out/proof
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wine-archive
+          path: out/wine/
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wine-proof
+          path: out/proof/
+          retention-days: 1
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wine-logs
+          path: out/logs/
+          retention-days: 1
+
+  # The Wine release's draft (sdk-check wine-draft, WineDraft.swift), the
+  # only Wine job that writes: the proof compared with the last published
+  # wine-* release's (build_tools' proof-diff, PROOF_TAG_PREFIX wine-), then
+  # wine-<version>-staging drafted on the proof's commit (main's head, and
+  # checked to be on main), or its draft updated, with the archive, its
+  # .sha256, proof.zip and proof-diff.json.
+  wine-draft:
+    needs: wine
+    # Drafted from main alone: a branch's recipe may be built and checked, never proposed (NCH, 26 Nov 2026).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    container: ghcr.io/attilathefun/visor-agent@sha256:849dcf6aeb16119e3b769b4f0c410b93ac58ed1e3b3ef2801f7534def3fbaaf0
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wine-archive
+          path: out/wine
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wine-proof
+          path: out/proof
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AttilaTheFun/build_tools
+          ref: 3ce2a6b10df8e1fa0f41cc44378d67b8b5b5b6e4 # v0.2.0
+          path: out/build_tools
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_TAG_PREFIX: wine-
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          swift build --package-path sdk/check -c release && swift build --package-path out/build_tools -c release --product proof-diff
+          out/build_tools/.build/release/proof-diff make out/proof/proof.zip
+          sdk/check/.build/release/sdk-check wine-draft --assets out/wine --proof out/proof
