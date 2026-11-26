@@ -410,9 +410,55 @@ open class URLSession: @unchecked Sendable {
         }
     }
 
+    /// Loads `request` with its body written to `file` as it arrives (a
+    /// download task's): what the task's response is. Throws a URLError.
+    func _load(_ request: URLRequest, to file: URL, task: URLSessionTask) async throws -> URLResponse {
+        guard let url = request.url else { throw URLError(.unsupportedURL, url: nil) }
+        switch url.scheme?.lowercased() {
+        case "http", "https":
+            let (transport, exchange) = try httpExchange(request, url: url, upload: nil, task: task)
+            let answer: HTTPTransportResponse
+            do {
+                answer = try await transport.download(exchange, to: file)
+            } catch {
+                throw Self.urlError(error, url: url)
+            }
+            // What was written, as the task's bytes received.
+            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+            task._received(size)
+            return try Self.httpResponse(answer, url: url)
+        default:
+            // A file or data URL: read, then written.
+            let (data, response) = try await _load(request, upload: nil, task: task)
+            do {
+                try data.write(to: file)
+            } catch {
+                throw URLError(.cannotCreateFile, url: url, underlying: error)
+            }
+            return response
+        }
+    }
+
     private func loadHTTP(
         _ request: URLRequest, url: URL, upload: _UploadBody?, task: URLSessionTask
     ) async throws -> (Data, URLResponse) {
+        let (transport, exchange) = try httpExchange(request, url: url, upload: upload, task: task)
+        let answer: HTTPTransportResponse
+        do {
+            answer = try await transport.send(exchange)
+        } catch {
+            throw Self.urlError(error, url: url)
+        }
+        let response = try Self.httpResponse(answer, url: url)
+        task._received(answer.body.count)
+        return (answer.body, response)
+    }
+
+    /// The exchange an HTTP request makes, and the transport it goes
+    /// through: the request's fields, then the session's, and its body.
+    private func httpExchange(
+        _ request: URLRequest, url: URL, upload: _UploadBody?, task: URLSessionTask
+    ) throws -> (any HTTPTransport, HTTPTransportRequest) {
         let body = try Self.body(of: request, upload: upload, url: url)
         var fields = request._headerFields
         for field in sessionConfiguration._additionalHeaderFields
@@ -434,12 +480,11 @@ open class URLSession: @unchecked Sendable {
         let exchange = HTTPTransportRequest(
             method: request.httpMethod ?? "GET", url: url, headerFields: fields, body: body,
             timeoutInterval: request.timeoutInterval)
-        let answer: HTTPTransportResponse
-        do {
-            answer = try await transport.send(exchange)
-        } catch {
-            throw Self.urlError(error, url: url)
-        }
+        return (transport, exchange)
+    }
+
+    /// The response an exchange's answer is.
+    private static func httpResponse(_ answer: HTTPTransportResponse, url: URL) throws -> HTTPURLResponse {
         // Repeated fields are one, their values joined, as Apple's are.
         var headerFields: [String: String] = [:]
         var names: [String: String] = [:]
@@ -459,8 +504,7 @@ open class URLSession: @unchecked Sendable {
         else {
             throw URLError(.badServerResponse, url: url, debugDescription: "Status \(answer.statusCode)")
         }
-        task._received(answer.body.count)
-        return (answer.body, response)
+        return response
     }
 
     /// The body a request sends: the upload's, else the request's own.

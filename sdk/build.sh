@@ -818,6 +818,58 @@ EOF
             echo "C++ interop under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"cxx: 42 11 isomer.dev"* ]] || bad="$bad the C++ interop client printed otherwise;"
         fi
+        # A download task: its body written to a file through the transport's
+        # `download` (here the default, `send` then the file), over a
+        # transport the client installs as a host does.
+        DOWNLOAD="$WORK/download-client"
+        rm -rf "$DOWNLOAD"; mkdir -p "$DOWNLOAD/Sources/DownloadClient"
+        cat > "$DOWNLOAD/Package.swift" <<'EOF'
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "DownloadClient",
+    targets: [
+        .executableTarget(
+            name: "DownloadClient",
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"])]
+        ),
+    ]
+)
+EOF
+        cat > "$DOWNLOAD/Sources/DownloadClient/main.swift" <<'EOF'
+import Foundation
+import IsomerFoundation
+
+struct Answering: HTTPTransport {
+    func send(_ request: HTTPTransportRequest) async throws -> HTTPTransportResponse {
+        HTTPTransportResponse(
+            statusCode: 200, headerFields: [(name: "Content-Type", value: "text/plain")],
+            body: Data("body of \(request.url.path)".utf8), url: request.url)
+    }
+}
+
+IsomerNetwork.http = Answering()
+let (file, response) = try await URLSession.shared.download(from: URL(string: "https://isomer.dev/a")!)
+let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+print("download:", status, try String(contentsOf: file, encoding: .utf8))
+try FileManager.default.removeItem(at: file)
+EOF
+        "$BIN/swift" build --build-system native --package-path "$DOWNLOAD" --scratch-path "$DOWNLOAD/.build" \
+            --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" -c release
+        DOWNLOAD_BIN="$(find "$DOWNLOAD/.build" -name DownloadClient.wasm -type f -path "*/release/*" -print -quit)"
+        if [ -z "$DOWNLOAD_BIN" ]; then bad="$bad the download client did not link;"
+        else
+            # The guest's /tmp, where the download's file goes (swift-foundation's
+            # temporary directory on WASI). WasmKit's CLI grants a directory
+            # at its own path only, so it is the job's /tmp; the client
+            # removes its file.
+            output="$("$BIN/wasmkit" run --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
+                || bad="$bad the download client failed under WasmKit;"
+            echo "A download task under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
+            [[ "$output" == *"download: 200 body of /a"* ]] || bad="$bad the download client printed otherwise;"
+        fi
     fi
     [ -z "$bad" ] || { echo "FAIL ($TRIPLE):$bad" >&2; exit 1; }
     echo "PASS ($TRIPLE): one Foundation, Isomer's"
