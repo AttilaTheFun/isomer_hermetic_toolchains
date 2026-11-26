@@ -762,7 +762,8 @@ EOF
         fi
         # Swift's C++ interop: a C++ target whose header takes the C
         # library through libc++ (<inttypes.h>, <string>), imported with
-        # the C++ standard library and Foundation, and run.
+        # the C++ standard library and Foundation, and run. (wasm has no
+        # CxxStdlib Swift overlay: `std` is the clang module alone.)
         CXX="$WORK/cxx-client"
         rm -rf "$CXX"; mkdir -p "$CXX/Sources/Tiny/include" "$CXX/Sources/CxxClient"
         cat > "$CXX/Package.swift" <<'EOF'
@@ -790,20 +791,23 @@ EOF
 
 namespace tiny {
 inline int64_t twice(int64_t x) { return 2 * x; }
-std::string greeting(const std::string &name);
+std::string greeting(const char *name);
 }
 EOF
         cat > "$CXX/Sources/Tiny/Tiny.cpp" <<'EOF'
 #include "Tiny.h"
 
-std::string tiny::greeting(const std::string &name) { return "hello, " + name; }
+std::string tiny::greeting(const char *name) { return std::string("hello, ") + name; }
 EOF
         cat > "$CXX/Sources/CxxClient/main.swift" <<'EOF'
 import CxxStdlib
 import Foundation
 import Tiny
 
-let greeting = String(tiny.greeting(std.string("wasm")))
+// No CxxStdlib overlay on wasm (no String <-> std.string), so through C
+// strings: std::string's own c_str().
+let text = tiny.greeting("wasm")
+let greeting = String(cString: text.c_str())
 print("cxx:", tiny.twice(21), greeting, URL(string: "https://isomer.dev/a")?.host ?? "-")
 EOF
         "$BIN/swift" build --build-system native --package-path "$CXX" --scratch-path "$CXX/.build" \
