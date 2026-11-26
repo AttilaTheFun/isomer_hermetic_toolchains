@@ -438,8 +438,9 @@ jobs:
   # .sha256, proof.zip and proof-diff.json.
   wine-draft:
     needs: wine
-    # Drafted from main alone: a branch's recipe may be built and checked, never proposed (NCH, 26 Nov 2026).
-    if: github.ref == 'refs/heads/main'
+    # Drafted from isomer-6.4.2 alone (PR-only, by its exact name: an agent may create a new isomer-* branch at any
+    # commit): a branch's recipe may be built and checked, never proposed. The PR moving the SDK's line changes this.
+    if: github.ref == 'refs/heads/isomer-6.4.2'
     runs-on: ubuntu-24.04-arm
     container: ghcr.io/attilathefun/visor-agent@sha256:849dcf6aeb16119e3b769b4f0c410b93ac58ed1e3b3ef2801f7534def3fbaaf0
     timeout-minutes: 30
