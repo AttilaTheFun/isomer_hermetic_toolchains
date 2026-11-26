@@ -11,6 +11,20 @@
 #   android-<arch>   the same bundle with that architecture alone switched
 #                    (a quicker build; the others stay swift.org's)
 #   wasm             swift.org's WebAssembly bundle, wasm32-unknown-wasip1
+#   wasm-threads     the same bundle with a second target beside it,
+#                    wasm32-unknown-wasip1-threads: Swift's Concurrency on
+#                    guest threads (swiftlang/swift#92018 on 6.4.2) and C++
+#                    exceptions (the standard exnref proposal) in its libc++,
+#                    built from upstream's sources and sdk/patches by
+#                    `sdk-check build-threads-runtime` (swift.org publishes
+#                    none for 6.4.2), with Isomer's Foundation family for both
+#                    targets. Plain only: there is no ICU for the threads
+#                    triple. Its archive is …_wasm-threads.artifactbundle
+#                    .tar.gz; rules_swift registers it as a second wasm_sdk
+#                    tag, `threads = True`, and reads the threads target's
+#                    swift-sdk.json alone (rules_swift takes the one file of
+#                    that name, so the wasip1 target's is
+#                    wasip1-swift-sdk.json in this bundle)
 #   <any>-i18n       the same with FoundationInternationalization in
 #                    Foundation (dates, numbers, lists and measurements
 #                    formatted as on Apple's platforms) and the SDK's ICU
@@ -81,12 +95,17 @@ umask 022
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage() { echo "usage: sdk/build.sh <android|android-aarch64|android-x86_64|android-armv7|wasm>[-i18n] [--out=DIR] [--work=DIR]" >&2; exit 2; }
+usage() { echo "usage: sdk/build.sh <android|android-aarch64|android-x86_64|android-armv7|wasm>[-i18n]|wasm-threads [--out=DIR] [--work=DIR]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 TARGET=$1; shift
 # The variant: -i18n, FoundationInternationalization in Foundation.
 I18N=0
 case "$TARGET" in *-i18n) I18N=1; TARGET="${TARGET%-i18n}" ;; esac
+# The threads SDK: wasm's bundle with wasm32-unknown-wasip1-threads beside
+# its target (plain only).
+THREADS=0
+[ "$TARGET" != wasm-threads ] || THREADS=1
+[ $I18N = 0 ] || [ $THREADS = 0 ] || { echo "no -i18n threads SDK: ICU isn't built for wasm32-unknown-wasip1-threads" >&2; exit 2; }
 OUT="$REPO/.build/isomer-sdk/out"
 WORK="$REPO/.build/isomer-sdk/work"
 for arg in "$@"; do
@@ -123,9 +142,10 @@ case "$TARGET" in
         # androideabi.
         API=23
         ;;
-    wasm)
+    wasm|wasm-threads)
         PLATFORM=wasi
-        ARCHES=(wasm32)
+        # wasm32-threads: the threads SDK's second target.
+        if [ $THREADS = 1 ]; then ARCHES=(wasm32 wasm32-threads); else ARCHES=(wasm32); fi
         BUNDLE=swift-$SWIFT_VERSION-RELEASE_wasm.artifactbundle
         SDK_URL=https://download.swift.org/swift-$SWIFT_VERSION-release/wasm-sdk/swift-$SWIFT_VERSION-RELEASE/$BUNDLE.tar.gz
         SDK_SHA256=83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
@@ -139,6 +159,8 @@ esac
 # name, so the directory keeps swift.org's.
 if [ $I18N = 1 ]; then
     ARCHIVE_NAME="${BUNDLE%.artifactbundle}-i18n.artifactbundle.tar.gz"
+elif [ $THREADS = 1 ]; then
+    ARCHIVE_NAME="${BUNDLE%.artifactbundle}-threads.artifactbundle.tar.gz"
 else
     ARCHIVE_NAME="$BUNDLE.tar.gz"
 fi
@@ -150,22 +172,24 @@ fi
 triple_of() {
     case "$PLATFORM" in
         android) echo "$1-unknown-linux-android$API" ;;
-        wasi) echo "wasm32-unknown-wasip1" ;;
+        wasi) if [ "$1" = wasm32-threads ]; then echo "wasm32-unknown-wasip1-threads"; else echo "wasm32-unknown-wasip1"; fi ;;
     esac
 }
 static_rel_of() {
     case "$PLATFORM" in
         android) echo "swift-android/swift-resources/usr/lib/swift_static-$1" ;;
-        wasi) echo "swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift_static" ;;
+        wasi) echo "swift-$SWIFT_VERSION-RELEASE_wasm/$(triple_of "$1")/swift.xctoolchain/usr/lib/swift_static" ;;
     esac
 }
+# clang's name for a wasm triple: its sysroot's lib/ and include/ directories.
+clang_triple_of() { triple_of "$1" | sed 's/-unknown-/-/'; }
 # What SwiftPM's --swift-sdk names: Android's triple selects its variant, but
 # wasm's bundle has two SDKs for one triple (Swift and embedded Swift), so the
 # artifact's id.
 swift_sdk_of() {
     case "$PLATFORM" in
         android) triple_of "$1" ;;
-        wasi) echo "swift-$SWIFT_VERSION-RELEASE_wasm" ;;
+        wasi) if [ "$1" = wasm32-threads ]; then echo "swift-$SWIFT_VERSION-RELEASE_wasm-threads"; else echo "swift-$SWIFT_VERSION-RELEASE_wasm"; fi ;;
     esac
 }
 
@@ -186,6 +210,18 @@ TOOLCHAIN_URL=https://download.swift.org/swift-$SWIFT_VERSION-release/${TOOLCHAI
 # same archive's sha256. Only its sysroot and clang headers are used, and only
 # on the host: its programs are x86_64 Linux's. (wasm's bundle carries its
 # own sysroot, WASI.sdk.)
+# WasmKit 0.5.0's CLI, which runs the threads target's programs (`run
+# --wasi-threads`): the toolchain's own wasmkit (0.3.1) rejects shared memory.
+case "$(uname -m)" in
+    aarch64|arm64)
+        WASMKIT_ASSET=wasmkit-aarch64-swift-linux-musl.tar.gz
+        WASMKIT_SHA256=c05933969ad1db2b1671509c0ec0e7f938367ab67a8fe5bdd08664abd976c6b3 ;;
+    x86_64)
+        WASMKIT_ASSET=wasmkit-x86_64-swift-linux-musl.tar.gz
+        WASMKIT_SHA256=395d83ad8598fcbd58f2bdd1c2d3d6fa50ea741a80d7efc2bcd4c4af4c8d2348 ;;
+esac
+WASMKIT_URL=https://github.com/swiftwasm/WasmKit/releases/download/0.5.0/$WASMKIT_ASSET
+
 NDK_URL=https://dl.google.com/android/repository/android-ndk-r30-linux.zip
 NDK_SHA256=753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2
 
@@ -300,6 +336,16 @@ autolinks_of() {
     rm -f "$section" "$copy"
 }
 
+# SwiftPM compiles a package's C and C++ with the clang first on PATH (the
+# toolset's rootPath has none), which in a container is the image's
+# (/usr/bin/clang, Ubuntu's 18). The threads target's toolset asks clang for
+# `-mllvm -wasm-use-legacy-eh=false`, an option of LLVM 20 and later, so its
+# builds run with this toolchain's clang (21, the SDK's) first on PATH, as a
+# swift.org toolchain installed is.
+swiftpm_env() {
+    if [ "$1" = wasm32-threads ]; then echo "PATH=$BIN:$PATH"; else echo "PATH=$PATH"; fi
+}
+
 # --- fetch --------------------------------------------------------------------
 
 step fetch "$TARGET$([ $I18N = 0 ] || echo ' (-i18n: with FoundationInternationalization)'): ${ARCHES[*]}"
@@ -308,6 +354,7 @@ mkdir -p "$DOWNLOADS" "$OUT"
 fetch "$TOOLCHAIN_URL" "$TOOLCHAIN_SHA256" "swift-$SWIFT_VERSION-RELEASE-$TOOLCHAIN_PLATFORM.tar.gz"
 fetch "$SDK_URL" "$SDK_SHA256" "$BUNDLE.tar.gz"
 [ "$PLATFORM" != android ] || fetch "$NDK_URL" "$NDK_SHA256" android-ndk-r30-linux.zip
+[ $THREADS = 0 ] || fetch "$WASMKIT_URL" "$WASMKIT_SHA256" "wasmkit-0.5.0-$WASMKIT_ASSET"
 
 if [ ! -x "$BIN/swift" ] || [ "$(cat "$TOOLCHAIN/.sha256" 2>/dev/null)" != "$TOOLCHAIN_SHA256" ]; then
     rm -rf "$TOOLCHAIN"; mkdir -p "$TOOLCHAIN"
@@ -330,6 +377,18 @@ fi
 "$BIN/swift" build --package-path "$REPO/sdk/check" --scratch-path "$WORK/sdk-check" -c release --product sdk-check
 SDK_CHECK="$WORK/sdk-check/release/sdk-check"
 [ -x "$SDK_CHECK" ] || { echo "sdk-check did not build" >&2; exit 1; }
+if [ $THREADS = 1 ]; then
+    rm -rf "$WORK/wasmkit-0.5.0"; mkdir -p "$WORK/wasmkit-0.5.0"
+    tar -xzf "$DOWNLOADS/wasmkit-0.5.0-$WASMKIT_ASSET" -C "$WORK/wasmkit-0.5.0"
+    WASMKIT="$(find "$WORK/wasmkit-0.5.0" -type f -name wasmkit -perm -u+x | head -1)"
+    [ -n "$WASMKIT" ] || { echo "no wasmkit in $WASMKIT_ASSET" >&2; exit 1; }
+    echo "WasmKit $("$WASMKIT" --version), for the threads target's programs"
+    # The threads target's runtime, built from upstream's sources and
+    # sdk/patches (kept when built before from the same inputs).
+    THREADS_RUNTIME="$WORK/threads-runtime/out/wasm32-unknown-wasip1-threads"
+    "$SDK_CHECK" build-threads-runtime --bin "$BIN" --patches "$REPO/sdk/patches" \
+        --work "$WORK/threads-runtime" --out "$WORK/threads-runtime/out"
+fi
 
 # --- deps ---------------------------------------------------------------------
 
@@ -377,6 +436,116 @@ echo "the package: $REPO, copied to $PACKAGE"
 step prune "the stock bundle, corelibs Foundation out of ${ARCHES[*]}"
 rm -rf "$PRUNED"; mkdir -p "$PRUNED"
 tar -xzf "$DOWNLOADS/$BUNDLE.tar.gz" -C "$PRUNED"
+# The threads SDK: the runtime as a second target beside the stock one, with
+# a swift-sdk.json and toolset.json of its own. rules_swift reads the one
+# swift-sdk.json info.json names (the threads target's: its `threads = True`
+# tag wants that triple), so the stock target's is renamed; SwiftPM reads
+# every artifact, by id: swift-6.4.2-RELEASE_wasm (wasm32-unknown-wasip1) and
+# swift-6.4.2-RELEASE_wasm-threads.
+if [ $THREADS = 1 ]; then
+    WASM_SDK_DIR="$PRUNED/$BUNDLE/swift-$SWIFT_VERSION-RELEASE_wasm"
+    THREADS_DIR="$WASM_SDK_DIR/wasm32-unknown-wasip1-threads"
+    cp -a "$THREADS_RUNTIME" "$THREADS_DIR"
+    rm -f "$THREADS_DIR/.inputs"
+    mv "$WASM_SDK_DIR/wasm32-unknown-wasip1/swift-sdk.json" "$WASM_SDK_DIR/wasm32-unknown-wasip1/wasip1-swift-sdk.json"
+    cat > "$THREADS_DIR/swift-sdk.json" <<'JSON'
+{
+  "schemaVersion" : "4.0",
+  "targetTriples" : {
+    "wasm32-unknown-wasip1-threads" : {
+      "sdkRootPath" : "WASI.sdk",
+      "swiftResourcesPath" : "swift.xctoolchain/usr/lib/swift_static",
+      "swiftStaticResourcesPath" : "swift.xctoolchain/usr/lib/swift_static",
+      "toolsetPaths" : [
+        "toolset.json"
+      ]
+    }
+  }
+}
+JSON
+    # Threads (atomics, bulk memory, POSIX threads, local-exec TLS) for
+    # every compile; WebAssembly exceptions for C and C++, whose runtimes
+    # throw, as the standard proposal (LLVM 21 emits legacy EH unless told,
+    # which WasmKit doesn't take). SwiftPM hands a toolset's C options to
+    # swiftc too (as -Xcc, for the Clang importer), and swift-frontend
+    # rejects `-Xcc -mllvm -Xcc -wasm-use-legacy-eh=false` ("Unknown command
+    # line argument", an abort) unless its own LLVM was given the option
+    # (-Xllvm) first: so Swift compiles take the same two LLVM options, which
+    # also give the C++ a Swift module's Clang importer compiles the same EH.
+    # Swift's own frames don't unwind: an exception that escapes into Swift
+    # ends the program. The link: a shared
+    # memory, imported and exported, with a maximum (wasi-threads' instances
+    # share it), and libunwind, which libc++abi throws through (swiftc also
+    # takes it from static-executable-args.lnk; rules_swift, which links by
+    # itself, from here). rules_swift wants cxxCompiler's options to be
+    # cCompiler's.
+    cat > "$THREADS_DIR/toolset.json" <<'JSON'
+{
+  "cCompiler" : {
+    "extraCLIOptions" : [
+      "-matomics", "-mbulk-memory", "-mthread-model", "posix", "-pthread", "-ftls-model=local-exec",
+      "-fwasm-exceptions", "-mllvm", "-wasm-use-legacy-eh=false"
+    ]
+  },
+  "cxxCompiler" : {
+    "extraCLIOptions" : [
+      "-matomics", "-mbulk-memory", "-mthread-model", "posix", "-pthread", "-ftls-model=local-exec",
+      "-fwasm-exceptions", "-mllvm", "-wasm-use-legacy-eh=false"
+    ]
+  },
+  "linker" : {
+    "extraCLIOptions" : [
+      "--import-memory", "--export-memory", "--shared-memory", "--max-memory=1073741824", "-lunwind"
+    ]
+  },
+  "rootPath" : "swift.xctoolchain/usr/bin",
+  "schemaVersion" : "1.0",
+  "swiftCompiler" : {
+    "extraCLIOptions" : [
+      "-static-stdlib",
+      "-Xcc", "-matomics", "-Xcc", "-mbulk-memory", "-Xcc", "-mthread-model", "-Xcc", "posix",
+      "-Xcc", "-pthread", "-Xcc", "-ftls-model=local-exec",
+      "-Xllvm", "-wasm-enable-eh", "-Xllvm", "-wasm-use-legacy-eh=false"
+    ]
+  }
+}
+JSON
+    cat > "$PRUNED/$BUNDLE/info.json" <<JSON
+{
+  "artifacts" : {
+    "swift-$SWIFT_VERSION-RELEASE_wasm" : {
+      "type" : "swiftSDK",
+      "variants" : [
+        {
+          "path" : "swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1/wasip1-swift-sdk.json"
+        }
+      ],
+      "version" : "0.0.1"
+    },
+    "swift-$SWIFT_VERSION-RELEASE_wasm-embedded" : {
+      "type" : "swiftSDK",
+      "variants" : [
+        {
+          "path" : "swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1/embedded-swift-sdk.json"
+        }
+      ],
+      "version" : "0.0.1"
+    },
+    "swift-$SWIFT_VERSION-RELEASE_wasm-threads" : {
+      "type" : "swiftSDK",
+      "variants" : [
+        {
+          "path" : "swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1-threads/swift-sdk.json"
+        }
+      ],
+      "version" : "0.0.1"
+    }
+  },
+  "schemaVersion" : "1.0"
+}
+JSON
+    echo "in: wasm32-unknown-wasip1-threads/ ($(du -sh "$THREADS_DIR" | cut -f1)) with its swift-sdk.json and toolset.json; info.json's three artifacts"
+fi
 declare -A STOCK_STATIC_BYTES MODULE_TRIPLE
 # The SDK's minimum Android API is its swift-sdk.json's lowest triple, which
 # rules_swift reads (and fails an app's NDK below): it must be the API the
@@ -399,8 +568,14 @@ for arch in "${ARCHES[@]}"; do
     # The name a module's file for this architecture has in a .swiftmodule
     # directory (the triple without an API level, as the compiler normalizes
     # it): read from the stock Foundation's, which the build's replaces.
-    MODULE_TRIPLE[$arch]="$(basename "$(ls "$OS_DIR"/Foundation.swiftmodule/*.swiftmodule | head -1)" .swiftmodule)"
+    # (The threads runtime has no Foundation: its standard library's.)
+    reference=Foundation
+    [ "$arch" != wasm32-threads ] || reference=Swift
+    MODULE_TRIPLE[$arch]="$(basename "$(ls "$OS_DIR"/$reference.swiftmodule/*.swiftmodule | head -1)" .swiftmodule)"
     echo "-- $arch: modules are $OS_DIR/<module>.swiftmodule/${MODULE_TRIPLE[$arch]}.swiftmodule"
+    # The threads runtime is built without corelibs' Foundation, XCTest and
+    # swift-testing: nothing to take out.
+    [ "$arch" != wasm32-threads ] || continue
     for m in "${CORELIBS_MODULES[@]}"; do
         [ -d "$OS_DIR/$m.swiftmodule" ] || { echo "the stock SDK has no $m.swiftmodule for $arch" >&2; exit 1; }
         rm -rf "$OS_DIR/$m.swiftmodule"
@@ -429,9 +604,20 @@ done
 #   an #error without -D_WASI_EMULATED_SIGNAL;
 # - libswiftCxx.a is only beside the dynamic resources, not in swift_static,
 #   where swift-sdk.json points (-lswiftCxx not found).
+# The threads target's two maps are the same files as the stock target's and
+# take the same patch at its own paths; the runtime's build put its
+# libswiftCxx.a in place.
 if [ "$PLATFORM" = wasi ]; then
     patch -d "$PRUNED" -p1 --forward --no-backup-if-mismatch < "$REPO/sdk/patches/wasm-cxx-interop.patch"
+    if [ $THREADS = 1 ]; then
+        sed -e 's|/wasm32-unknown-wasip1/|/wasm32-unknown-wasip1-threads/|g' "$REPO/sdk/patches/wasm-cxx-interop.patch" |
+            patch -d "$PRUNED" -p1 --forward --no-backup-if-mismatch
+        [ -f "$PRUNED/$BUNDLE/$(static_rel_of wasm32-threads)/wasi/libswiftCxx.a" ] ||
+            { echo "the threads runtime has no libswiftCxx.a in its static resources" >&2; exit 1; }
+        echo "  in: the C++ interop module maps (wasm32-threads)"
+    fi
     for arch in "${ARCHES[@]}"; do
+        [ "$arch" != wasm32-threads ] || continue
         SWIFT_LIB="$PRUNED/$BUNDLE/$(static_rel_of "$arch")"
         DYNAMIC="${SWIFT_LIB%/swift_static}/swift/$PLATFORM"
         [ -f "$DYNAMIC/libswiftCxx.a" ] || { echo "the stock SDK has no libswiftCxx.a in $DYNAMIC" >&2; exit 1; }
@@ -500,7 +686,7 @@ for arch in "${ARCHES[@]}"; do
     for target in "${TARGETS[@]}"; do
         echo "-- $target"
         ISOMER_SWIFT_SDK=1 ISOMER_FOUNDATION_INTERNATIONALIZATION=$I18N SWIFTCI_USE_LOCAL_DEPS="$WORK/deps" \
-            "$BIN/swift" build --build-system native \
+            env "$(swiftpm_env "$arch")" "$BIN/swift" build --build-system native \
             --package-path "$PACKAGE" --scratch-path "$SCRATCH" \
             --swift-sdks-path "$BUILD_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib \
             -c release -debug-info-format none --target "$target"
@@ -553,6 +739,15 @@ for arch in "${ARCHES[@]}"; do
     mkdir -p "$STATIC/_FoundationCShims"
     cp "$PACKAGE"/Sources/_FoundationCShims/include/* "$STATIC/_FoundationCShims/"
     echo "  in: _FoundationCShims/ (clang module: $(ls "$STATIC/_FoundationCShims" | wc -l) files)"
+    # The threads target's Foundation imports CWasiThreadIdentity (Thread's
+    # isMainThread), so its clients load that clang module too: its header
+    # and a module map naming no library (the archive is folded below).
+    if [ "$arch" = wasm32-threads ]; then
+        mkdir -p "$STATIC/CWasiThreadIdentity"
+        cp "$PACKAGE"/Isomer/Sources/CWasiThreadIdentity/identity.h "$STATIC/CWasiThreadIdentity/"
+        printf 'module CWasiThreadIdentity {\n    header "identity.h"\n    export *\n}\n' > "$STATIC/CWasiThreadIdentity/module.modulemap"
+        echo "  in: CWasiThreadIdentity/ (clang module)"
+    fi
 
     fold_into "$OS_DIR" FoundationEssentials "${FOLD_INTO_ESSENTIALS[@]}"
     fold_into "$OS_DIR" Foundation "${FOLD_INTO_FOUNDATION[@]}"
@@ -567,7 +762,8 @@ step pack
 # earlier ones): the package, Isomer's sources and this script. A commit to
 # anything else (CI's workflow, sdk/check, the README) leaves the bundle,
 # and its checksum, as they were.
-EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct -- Package.swift Sources Isomer sdk/build.sh 2>/dev/null || true)}"
+EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct -- Package.swift Sources Isomer sdk/build.sh sdk/patches \
+    sdk/check/Sources/sdk-check/ThreadsRuntime.swift 2>/dev/null || true)}"
 [ -n "$EPOCH" ] || { echo "no commit time: set SOURCE_DATE_EPOCH" >&2; exit 1; }
 ARCHIVE="$OUT/$ARCHIVE_NAME"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
@@ -664,9 +860,12 @@ fi
 
 for arch in "${ARCHES[@]}"; do
     TRIPLE="$(triple_of "$arch")"
+    # What runs a wasm program: the toolchain's WasmKit, or for the threads
+    # target WasmKit 0.5.0 with WASI Threads (a shared memory, imported).
+    if [ "$arch" = wasm32-threads ]; then RUN_WASM=("$WASMKIT" run --wasi-threads); else RUN_WASM=("$BIN/wasmkit" run); fi
     step check "a client built and linked against the new bundle, for $TRIPLE"
     rm -rf "$CLIENT/.build"
-    "$BIN/swift" build --build-system native --package-path "$CLIENT" --scratch-path "$CLIENT/.build" \
+    env "$(swiftpm_env "$arch")" "$BIN/swift" build --build-system native --package-path "$CLIENT" --scratch-path "$CLIENT/.build" \
         --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" --static-swift-stdlib -c release
     # Android's program is Client; wasm's Client.wasm.
     CLIENT_BIN="$(find "$CLIENT/.build" \( -name Client -o -name Client.wasm \) -type f -path "*/release/*" -print -quit)"
@@ -711,19 +910,21 @@ for arch in "${ARCHES[@]}"; do
         for l in wasi-emulated-getpid wasi-emulated-signal wasi-emulated-mman; do
             [[ " $autolinks " == *" -l$l "* ]] || bad="$bad no -l$l autolinked;"
         done
-        output="$("$BIN/wasmkit" run "$CLIENT_BIN" 2>&1)" || bad="$bad the program failed under WasmKit;"
+        output="$("${RUN_WASM[@]}" "$CLIENT_BIN" 2>&1)" || bad="$bad the program failed under WasmKit;"
         echo "the client under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
         [ "$(printf '%s\n' "$output" | head -2)" = "$EXPECTED_OUTPUT" ] || bad="$bad the program printed something else;"
         [ "$(printf '%s\n' "$output" | sed -n 4p)" = "$EXPECTED_BRIDGED" ] ||
             bad="$bad the program's numbers didn't bridge to NSNumber;"
         [ $I18N = 0 ] || [ "$(printf '%s\n' "$output" | sed -n 5,6p)" = "$EXPECTED_I18N_OUTPUT" ] ||
             bad="$bad the program formatted its date or number otherwise;"
-        # swift-testing beside this Foundation: `import Testing` with
+        # swift-testing beside this Foundation (not on the threads target,
+        # whose runtime has no swift-testing): `import Testing` with
         # `import Foundation` loads no overlay (above), and libTesting.a's
         # FoundationEssentials symbols are this one's. Its runner is called
         # as SwiftPM's test product calls it (SwiftPM's own test build
         # wants XCTest, which this SDK hasn't).
         TESTING="$WORK/testing-client"
+        if [ "$arch" = wasm32-threads ]; then echo "swift-testing: not in the threads runtime, not checked"; else
         rm -rf "$TESTING"; mkdir -p "$TESTING/Sources/Runner"
         cat > "$TESTING/Package.swift" <<'EOF'
 // swift-tools-version: 6.0
@@ -759,6 +960,7 @@ EOF
             output="$("$BIN/wasmkit" run "$RUNNER" 2>&1)" || bad="$bad swift-testing's tests failed under WasmKit;"
             echo "swift-testing under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"with 2 tests"*" passed"* ]] || bad="$bad swift-testing didn't find and pass both tests;"
+        fi
         fi
         # Swift's C++ interop: a C++ target whose header takes the C
         # library through libc++ (<inttypes.h>, <string>), imported with
@@ -809,12 +1011,12 @@ import Tiny
 let greeting = tiny.greeting("wasm")
 print("cxx:", tiny.twice(21), greeting.size(), URL(string: "https://isomer.dev/a")?.host ?? "-")
 EOF
-        "$BIN/swift" build --build-system native --package-path "$CXX" --scratch-path "$CXX/.build" \
+        env "$(swiftpm_env "$arch")" "$BIN/swift" build --build-system native --package-path "$CXX" --scratch-path "$CXX/.build" \
             --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" -c release
         CXX_BIN="$(find "$CXX/.build" -name CxxClient.wasm -type f -path "*/release/*" -print -quit)"
         if [ -z "$CXX_BIN" ]; then bad="$bad the C++ interop client did not link;"
         else
-            output="$("$BIN/wasmkit" run "$CXX_BIN" 2>&1)" || bad="$bad the C++ interop client failed under WasmKit;"
+            output="$("${RUN_WASM[@]}" "$CXX_BIN" 2>&1)" || bad="$bad the C++ interop client failed under WasmKit;"
             echo "C++ interop under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"cxx: 42 11 isomer.dev"* ]] || bad="$bad the C++ interop client printed otherwise;"
         fi
@@ -865,7 +1067,7 @@ EOF
             # temporary directory on WASI). WasmKit's CLI grants a directory
             # at its own path only, so it is the job's /tmp; the client
             # removes its file.
-            output="$("$BIN/wasmkit" run --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
+            output="$("${RUN_WASM[@]}" --dir /tmp "$DOWNLOAD_BIN" 2>&1)" \
                 || bad="$bad the download client failed under WasmKit;"
             echo "A download task under WasmKit:"; printf '%s\n' "$output" | sed 's/^/  | /'
             [[ "$output" == *"download: 200 body of /a"* ]] || bad="$bad the download client printed otherwise;"
@@ -873,6 +1075,15 @@ EOF
     fi
     [ -z "$bad" ] || { echo "FAIL ($TRIPLE):$bad" >&2; exit 1; }
     echo "PASS ($TRIPLE): one Foundation, Isomer's"
+
+    # The threads target's own: a TaskGroup over threads (with Foundation on
+    # each) and C++ exceptions across std::threads, SwiftPM packages built
+    # with the bundle's toolset and run with WASI Threads (sdk-check
+    # threads-clients).
+    if [ "$arch" = wasm32-threads ]; then
+        "$SDK_CHECK" threads-clients --bin "$BIN" --swift-sdks-path "$CHECK_SDKS" --swift-sdk "$(swift_sdk_of "$arch")" \
+            --target "$TRIPLE" --wasmkit "$WASMKIT" --work "$WORK/threads-clients"
+    fi
 
     # sdk-check (sdk/check): autolink, pairing and undefined, over every
     # Swift module the build made, against the platform's libraries at the
@@ -902,14 +1113,15 @@ EOF
             library_dirs=(--library-dir "$NDK_LIB/$API" --library-dir "$NDK_LIB")
             ;;
         wasi)
-            WASI_SDK="$CHECK_SDKS/$BUNDLE/swift-$SWIFT_VERSION-RELEASE_wasm/wasm32-unknown-wasip1/WASI.sdk"
+            WASI_SDK="$CHECK_SDKS/$BUNDLE/swift-$SWIFT_VERSION-RELEASE_wasm/$TRIPLE/WASI.sdk"
+            WASI_LIB="$WASI_SDK/lib/$(clang_triple_of "$arch")"
             check_args+=(--sdk "$WASI_SDK")
-            resolve_args+=(--resolve-against "$WASI_SDK/lib/wasm32-wasip1"
+            resolve_args+=(--resolve-against "$WASI_LIB"
                 --resolve-against "$RESOURCES/clang/lib/wasip1/libclang_rt.builtins-wasm32.a"
                 --allow-prefix __imported_wasi_ --allow __main_argc_argv)
             for g in __stack_pointer __heap_base __heap_end __data_end __global_base __memory_base __table_base \
                 __tls_base __tls_size __tls_align __indirect_function_table; do resolve_args+=(--allow "$g"); done
-            library_dirs=(--library-dir "$WASI_SDK/lib/wasm32-wasip1")
+            library_dirs=(--library-dir "$WASI_LIB")
             ;;
     esac
     module_args=()

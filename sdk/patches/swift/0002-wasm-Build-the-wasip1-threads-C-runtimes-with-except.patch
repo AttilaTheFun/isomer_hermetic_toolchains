@@ -1,0 +1,267 @@
+From 317d1a7166a3ef140c9930c8a580e10b01b97f9a Mon Sep 17 00:00:00 2001
+From: Agent <344224964+logan-shire-agent[bot]@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 19:13:36 -0500
+Subject: [wasm] Build the wasip1-threads C++ runtimes with exception handling
+
+The threads triple's sysroot gets libunwind, and libc++abi and libc++ with
+exceptions on (LIBCXX_ENABLE_EXCEPTIONS, LIBCXXABI_ENABLE_EXCEPTIONS,
+LIBCXXABI_USE_LLVM_UNWINDER), built with `-fwasm-exceptions -mllvm
+-wasm-use-legacy-eh=false` in place of `-fno-exceptions`, as wasi-sdk's EH
+sysroot builds them: the standard (exnref) proposal, since LLVM 21 still
+emits legacy EH by default and engines such as WasmKit take only the
+standard one. libunwind is static only (EH and PIC don't work together on
+wasm yet), with threads and compiler-rt. wasi-libc, compiler-rt and the
+wasip1 triple's runtimes are built as before.
+
+The runtimes' assembly is compiled for the target (CMAKE_ASM_COMPILER_TARGET,
+CMAKE_ASM_FLAGS), not the host.
+
+LLVM 21's libunwind needs two changes for wasm, carried in
+utils/wasm/llvm-patches/ and applied to the llvm-project checkout before the
+sysroot is built, unless they are already there:
+ - llvm-pr-168449.patch: llvm/llvm-project#168449 (config.h without
+   __declspec on wasm), wasi-sdk's copy;
+ - libunwind-wasm-no-asm.patch: UnwindRegistersSave.S and
+   UnwindRegistersRestore.S wrapped in `#if !defined(__wasm__)`, as llvm
+   main has them (assembly.h has no wasm case).
+---
+ .../products/wasisysroot.py                   | 76 +++++++++++++++++--
+ .../llvm-patches/libunwind-wasm-no-asm.patch  | 46 +++++++++++
+ utils/wasm/llvm-patches/llvm-pr-168449.patch  | 23 ++++++
+ 3 files changed, 139 insertions(+), 6 deletions(-)
+ create mode 100644 utils/wasm/llvm-patches/libunwind-wasm-no-asm.patch
+ create mode 100644 utils/wasm/llvm-patches/llvm-pr-168449.patch
+
+diff --git a/utils/swift_build_support/swift_build_support/products/wasisysroot.py b/utils/swift_build_support/swift_build_support/products/wasisysroot.py
+index 440320a..5be12b1 100644
+--- a/utils/swift_build_support/swift_build_support/products/wasisysroot.py
++++ b/utils/swift_build_support/swift_build_support/products/wasisysroot.py
+@@ -11,6 +11,7 @@
+ # ----------------------------------------------------------------------------
+ 
+ import os
++import subprocess
+ import sys
+ 
+ from . import cmake_product
+@@ -43,6 +44,7 @@ class WASISysroot(product.Product):
+         return False
+ 
+     def build(self, host_target):
++        self._apply_llvm_patches()
+         self._build_target(
+             host_target,
+             enable_wasi_threads=False,
+@@ -107,6 +109,22 @@ class WASISysroot(product.Product):
+         c_flags_str = ' '.join(c_flags)
+         cxx_flags_str = ' '.join(cxx_flags)
+ 
++        # The threads triple's C++ runtimes are built with WebAssembly
++        # exception handling, the standard (exnref) proposal: libunwind,
++        # libc++abi and libc++ with exceptions on, as wasi-sdk's EH sysroot
++        # builds them. LLVM 21 still emits the legacy EH instructions by
++        # default, which engines such as WasmKit don't take, so ask for the
++        # standard ones. Only the runtimes are built so; compiler-rt and
++        # wasi-libc keep the flags above.
++        enable_exceptions = enable_wasi_threads
++        runtimes_c_flags = list(c_flags)
++        runtimes_cxx_flags = list(cxx_flags)
++        if enable_exceptions:
++            eh_flags = ['-fwasm-exceptions', '-mllvm', '-wasm-use-legacy-eh=false']
++            runtimes_c_flags += eh_flags
++            runtimes_cxx_flags = [flag for flag in runtimes_cxx_flags
++                                  if flag != '-fno-exceptions'] + eh_flags
++
+         # Build compiler-rt builtins first and pass the built archive to wasi-libc.
+         self._build_compiler_rt_builtins(
+             compiler_rt_build_dir=compiler_rt_builtins_build_dir,
+@@ -162,8 +180,37 @@ class WASISysroot(product.Product):
+             ar_path=ar_path,
+             ranlib_path=ranlib_path,
+             cmake_has_threads=cmake_has_threads,
+-            c_flags=c_flags_str,
+-            cxx_flags=cxx_flags_str)
++            enable_exceptions=enable_exceptions,
++            c_flags=' '.join(runtimes_c_flags),
++            cxx_flags=' '.join(runtimes_cxx_flags))
++
++    def _apply_llvm_patches(self):
++        # LLVM changes the WASI runtimes need that swiftlang/llvm-project's
++        # release branch doesn't have yet, applied to the llvm-project
++        # checkout beside this one (utils/wasm/llvm-patches). Each is skipped
++        # once applied.
++        #  - llvm-pr-168449.patch: llvm/llvm-project#168449, libunwind's
++        #    config.h without __declspec on wasm, as wasi-sdk carries it.
++        #  - libunwind-wasm-no-asm.patch: libunwind's two assembly files
++        #    empty on wasm (assembly.h has no wasm case), as llvm main has
++        #    them.
++        patches_dir = os.path.abspath(os.path.join(
++            os.path.dirname(__file__), '..', '..', '..', 'wasm', 'llvm-patches'))
++        llvm_project_dir = os.path.join(
++            os.path.dirname(self.source_dir), 'llvm-project')
++        for name in sorted(os.listdir(patches_dir)):
++            if not name.endswith('.patch'):
++                continue
++            patch = os.path.join(patches_dir, name)
++            already_applied = subprocess.call(
++                ['git', 'apply', '--reverse', '--check', patch],
++                cwd=llvm_project_dir,
++                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
++            if already_applied:
++                print(f"--- {name}: already applied to {llvm_project_dir}", flush=True)
++                continue
++            print(f"--- {name}: applying to {llvm_project_dir}", flush=True)
++            subprocess.check_call(['git', 'apply', patch], cwd=llvm_project_dir)
+ 
+     def _build_wasi_libc(self, wasi_libc_build_dir, target_triple, build_root,
+                          cc_path, ar_path, nm_path, ranlib_path, builtins_lib_path):
+@@ -224,7 +271,7 @@ class WASISysroot(product.Product):
+ 
+     def _build_runtimes(self, runtimes_build_dir, target_triple, sysroot_install_path,
+                         build_root, cc_path, cxx_path, ar_path, ranlib_path,
+-                        cmake_has_threads, c_flags, cxx_flags):
++                        cmake_has_threads, enable_exceptions, c_flags, cxx_flags):
+         cmake = cmake_product.CMakeProduct(
+             args=self.args,
+             toolchain=self.toolchain,
+@@ -234,13 +281,23 @@ class WASISysroot(product.Product):
+         self._apply_wasi_toolchain_options(
+             cmake.cmake_options, sysroot_install_path, target_triple,
+             cc_path, cxx_path, ar_path, ranlib_path, c_flags, cxx_flags)
++        # Assembly is compiled for the target too: libunwind's
++        # UnwindRegistersSave.S and UnwindRegistersRestore.S (empty on wasm,
++        # with libunwind-wasm-no-asm.patch) would otherwise be assembled for
++        # the host and land in libunwind.a.
++        cmake.cmake_options.define('CMAKE_ASM_COMPILER_TARGET:STRING', target_triple)
++        cmake.cmake_options.define('CMAKE_ASM_FLAGS:STRING', c_flags)
+         enable_runtimes = ['libcxx', 'libcxxabi']
++        if enable_exceptions:
++            enable_runtimes = ['libunwind'] + enable_runtimes
++        cmake_has_exceptions = 'TRUE' if enable_exceptions else 'FALSE'
+         cmake.cmake_options.define('LLVM_ENABLE_RUNTIMES:STRING',
+                                    ';'.join(enable_runtimes))
+ 
+         libdir_suffix = '/' + target_triple
+         cmake.cmake_options.define('LIBCXX_LIBDIR_SUFFIX:STRING', libdir_suffix)
+         cmake.cmake_options.define('LIBCXXABI_LIBDIR_SUFFIX:STRING', libdir_suffix)
++        cmake.cmake_options.define('LIBUNWIND_LIBDIR_SUFFIX:STRING', libdir_suffix)
+         cmake.cmake_options.define('CXX_SUPPORTS_CXX11:BOOL', 'TRUE')
+ 
+         cmake.cmake_options.define('LIBCXX_ENABLE_THREADS:BOOL', cmake_has_threads)
+@@ -250,15 +307,15 @@ class WASISysroot(product.Product):
+         cmake.cmake_options.define('LIBCXX_HAS_WIN32_THREAD_API:BOOL', 'FALSE')
+         cmake.cmake_options.define('LIBCXX_ENABLE_SHARED:BOOL', 'FALSE')
+         cmake.cmake_options.define('LIBCXX_ENABLE_EXPERIMENTAL_LIBRARY:BOOL', 'FALSE')
+-        cmake.cmake_options.define('LIBCXX_ENABLE_EXCEPTIONS:BOOL', 'FALSE')
++        cmake.cmake_options.define('LIBCXX_ENABLE_EXCEPTIONS:BOOL', cmake_has_exceptions)
+         cmake.cmake_options.define('LIBCXX_ENABLE_FILESYSTEM:BOOL', 'TRUE')
+         cmake.cmake_options.define('LIBCXX_CXX_ABI', 'libcxxabi')
+         cmake.cmake_options.define('LIBCXX_HAS_MUSL_LIBC:BOOL', 'TRUE')
+ 
+         cmake.cmake_options.define('LIBCXX_ABI_VERSION', '2')
+-        cmake.cmake_options.define('LIBCXXABI_ENABLE_EXCEPTIONS:BOOL', 'FALSE')
++        cmake.cmake_options.define('LIBCXXABI_ENABLE_EXCEPTIONS:BOOL', cmake_has_exceptions)
+         cmake.cmake_options.define('LIBCXXABI_ENABLE_SHARED:BOOL', 'FALSE')
+-        cmake.cmake_options.define('LIBCXXABI_USE_LLVM_UNWINDER:BOOL', 'FALSE')
++        cmake.cmake_options.define('LIBCXXABI_USE_LLVM_UNWINDER:BOOL', cmake_has_exceptions)
+         cmake.cmake_options.define('LIBCXXABI_SILENT_TERMINATE:BOOL', 'TRUE')
+         cmake.cmake_options.define('LIBCXXABI_ENABLE_THREADS:BOOL', cmake_has_threads)
+         cmake.cmake_options.define('LIBCXXABI_HAS_PTHREAD_API:BOOL', cmake_has_threads)
+@@ -267,6 +324,13 @@ class WASISysroot(product.Product):
+                                    'FALSE')
+         cmake.cmake_options.define('LIBCXXABI_HAS_WIN32_THREAD_API:BOOL', 'FALSE')
+         cmake.cmake_options.define('LIBCXXABI_ENABLE_PIC:BOOL', 'FALSE')
++        if enable_exceptions:
++            # Exceptions and PIC don't work together on wasm yet, so libunwind
++            # is static only, as libc++ and libc++abi are.
++            cmake.cmake_options.define('LIBUNWIND_ENABLE_SHARED:BOOL', 'FALSE')
++            cmake.cmake_options.define('LIBUNWIND_ENABLE_THREADS:BOOL', cmake_has_threads)
++            cmake.cmake_options.define('LIBUNWIND_USE_COMPILER_RT:BOOL', 'TRUE')
++            cmake.cmake_options.define('LIBUNWIND_INCLUDE_TESTS:BOOL', 'FALSE')
+         cmake.cmake_options.define('UNIX:BOOL', 'TRUE')
+ 
+         cmake.build_with_cmake([], cmake.args.build_variant, [],
+diff --git a/utils/wasm/llvm-patches/libunwind-wasm-no-asm.patch b/utils/wasm/llvm-patches/libunwind-wasm-no-asm.patch
+new file mode 100644
+index 0000000..75cc5a5
+--- /dev/null
++++ b/utils/wasm/llvm-patches/libunwind-wasm-no-asm.patch
+@@ -0,0 +1,46 @@
++libunwind: no assembly on wasm
++
++UnwindRegistersSave.S and UnwindRegistersRestore.S include assembly.h,
++which has no case for WebAssembly ("Unsupported target") when they are
++assembled for wasm. Wrap each file in `#if !defined(__wasm__)`, as llvm
++main's copies of both files are, so they assemble to empty wasm objects
++(wasm unwinding is Unwind-wasm.c's) instead of host objects in a wasm
++libunwind.a.
++
++diff --git a/libunwind/src/UnwindRegistersRestore.S b/libunwind/src/UnwindRegistersRestore.S
++index 1bcd205..fb263c6 100644
++--- a/libunwind/src/UnwindRegistersRestore.S
+++++ b/libunwind/src/UnwindRegistersRestore.S
++@@ -6,6 +6,8 @@
++ //
++ //===----------------------------------------------------------------------===//
++ 
+++#if !defined(__wasm__)
+++
++ #include "assembly.h"
++ 
++ #define FROM_0_TO_15 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
++@@ -1257,3 +1259,4 @@ DEFINE_LIBUNWIND_FUNCTION(_ZN9libunwind19Registers_loongarch6jumptoEv)
++ 
++ NO_EXEC_STACK_DIRECTIVE
++ 
+++#endif /* !defined(__wasm__) */
++diff --git a/libunwind/src/UnwindRegistersSave.S b/libunwind/src/UnwindRegistersSave.S
++index 5139a55..67b4109 100644
++--- a/libunwind/src/UnwindRegistersSave.S
+++++ b/libunwind/src/UnwindRegistersSave.S
++@@ -6,6 +6,8 @@
++ //
++ //===----------------------------------------------------------------------===//
++ 
+++#if !defined(__wasm__)
+++
++ #include "assembly.h"
++ 
++ #define FROM_0_TO_15 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
++@@ -1235,3 +1237,5 @@ DEFINE_LIBUNWIND_FUNCTION(__unw_getcontext)
++ #endif /* !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__wasm__) */
++ 
++ NO_EXEC_STACK_DIRECTIVE
+++
+++#endif /* !defined(__wasm__) */
+diff --git a/utils/wasm/llvm-patches/llvm-pr-168449.patch b/utils/wasm/llvm-patches/llvm-pr-168449.patch
+new file mode 100644
+index 0000000..f5b8738
+--- /dev/null
++++ b/utils/wasm/llvm-patches/llvm-pr-168449.patch
+@@ -0,0 +1,23 @@
++From 852c8a2ebc0fdb1e781591e3e6e08d3a539bcfc3 Mon Sep 17 00:00:00 2001
++From: Yerzhan Zhamashev <yerzhan@novel.systems>
++Date: Wed, 21 Jan 2026 16:50:41 +0200
++Subject: [PATCH] libunwind: exclude __declspec from wasm build
++
++---
++ libunwind/src/config.h | 3 ++-
++ 1 file changed, 2 insertions(+), 1 deletion(-)
++
++diff --git a/libunwind/src/config.h b/libunwind/src/config.h
++index f017403fa2234..6014a37e27212 100644
++--- a/libunwind/src/config.h
+++++ b/libunwind/src/config.h
++@@ -75,7 +75,8 @@
++   #define _LIBUNWIND_EXPORT
++   #define _LIBUNWIND_HIDDEN
++ #else
++-  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX)
+++  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX) &&             \
+++      !defined(__wasm__)
++     #define _LIBUNWIND_EXPORT __declspec(dllexport)
++     #define _LIBUNWIND_HIDDEN
++   #else
+-- 
+2.54.0 (Apple Git-157)
+

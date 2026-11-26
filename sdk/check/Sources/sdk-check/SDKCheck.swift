@@ -18,11 +18,17 @@ struct SDKCheck: ParsableCommand {
               undefined  every archive's undefined symbols are defined by the
                          SDK's archives or by the platform's libraries at its
                          oldest supported level (Android's API, WASI's libc)
+            For the threads SDK (sdk/build.sh wasm-threads): build-threads-runtime,
+            the wasm32-unknown-wasip1-threads runtime from upstream's sources and
+            sdk/patches; threads-clients, a TaskGroup over threads and C++
+            exceptions across std::threads, built with SwiftPM against the
+            bundle and run under WasmKit with WASI Threads.
             And for a release run: version, the version its draft will be; proof,
             its proof.zip (Reviews' format 2); and draft, the release drafted with
             the SDKs and the proof.
             """,
-        subcommands: [Autolink.self, Pairing.self, Undefined.self, Version.self, Proof.self, Draft.self]
+        subcommands: [Autolink.self, Pairing.self, Undefined.self, BuildThreadsRuntime.self, ThreadsClients.self,
+                      Version.self, Proof.self, Draft.self]
     )
 }
 
