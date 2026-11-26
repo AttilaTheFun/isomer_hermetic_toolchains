@@ -58,6 +58,23 @@ public protocol HTTPTransport: Sendable {
     /// (an `AbortController`, OkHttp's `Call.cancel()`) stops it then.
     /// Whatever it returns after that is not used.
     func send(_ request: HTTPTransportRequest) async throws -> HTTPTransportResponse
+
+    /// Sends `request` and writes the response's body to `file` as it
+    /// arrives, never holding it whole, as a download task's is: what a large
+    /// file takes. Returns the response with an empty body. Everything else
+    /// is as `send`'s (redirects followed, content codings undone, the same
+    /// errors). The default sends and then writes the body; a transport
+    /// that can stream to a file (Android's) does so instead.
+    func download(_ request: HTTPTransportRequest, to file: URL) async throws -> HTTPTransportResponse
+}
+
+extension HTTPTransport {
+    public func download(_ request: HTTPTransportRequest, to file: URL) async throws -> HTTPTransportResponse {
+        var response = try await send(request)
+        try response.body.write(to: file)
+        response.body = Data()
+        return response
+    }
 }
 
 /// What an HTTP exchange sends.
